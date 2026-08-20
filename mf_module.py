@@ -805,7 +805,7 @@ def fund_row_html(f, show_account=False):
 def page_mf_portfolio():
     st.markdown(_CSS, unsafe_allow_html=True)
     st.markdown("""<div style="padding:8px 0 14px;">
-      <div style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:600;color:var(--text-primary);">
+      <div style="font-family:'Fraunces',serif;font-size:28px;font-weight:600;color:var(--text-primary);">
         💼 MF Portfolio Tracker</div>
       <div style="font-family:'DM Mono',monospace;font-size:10px;color:var(--text-muted);margin-top:2px;">
         MULTI-ACCOUNT · LIVE NAV · CDSL/NSDL CAS IMPORT · FAMILY PORTFOLIO</div>

@@ -202,7 +202,7 @@ def save_assets(assets):
 def sec_header(title, subtitle=""):
     st.markdown(f"""
     <div style="margin:24px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--accent-gold);">
-        <div style="font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:600;
+        <div style="font-family:'Fraunces',serif;font-size:20px;font-weight:600;
             color:var(--text-primary);">{title}</div>
         {f'<div style="font-family:var(--font-mono,DM Mono,monospace);font-size:10px;color:var(--text-muted);margin-top:2px;">{subtitle}</div>' if subtitle else ''}
     </div>""", unsafe_allow_html=True)
@@ -1913,7 +1913,7 @@ def page_finance():
     hcol1, hcol2 = st.columns([3,2])
     with hcol1:
         st.markdown("""<div style="padding:8px 0 10px;">
-            <div style="font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:600;color:var(--text-primary);">
+            <div style="font-family:'Fraunces',serif;font-size:28px;font-weight:600;color:var(--text-primary);">
                 💼 Finance Advisor</div>
             <div style="font-family:var(--font-mono,DM Mono,monospace);font-size:10px;color:var(--text-muted);margin-top:2px;">
                 PERSONAL WEALTH INTELLIGENCE · POWERED BY EQUITEX PRO</div>

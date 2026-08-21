@@ -11,6 +11,7 @@ import io
 import re
 import json
 import sys, os
+import openpyxl
 sys.path.insert(0, os.path.dirname(__file__))
 try:
     from finance_advisor import page_finance
@@ -1861,6 +1862,194 @@ def parse_master_template(file_bytes, fname):
             f"Traceback:\n{_tb.format_exc()[-500:]}"
         )
 
+
+def _clean_zerodha_symbol(sym):
+    """Zerodha appends single/double-letter series suffixes (e.g. DEEPAKSP-X,
+    GOLDBEES-E, DHARAN-Z) that aren't part of the real NSE trading symbol."""
+    sym = str(sym).strip().upper()
+    m = re.match(r'^([A-Z0-9&]+)-([A-Z]{1,2})$', sym)
+    return m.group(1) if m else sym
+
+
+def parse_zerodha_holdings(file_bytes):
+    """Dedicated parser for Zerodha Console's Holdings export (Equity sheet).
+    Real header row (Symbol, ISIN, Sector, Quantity Available, ..., Average
+    Price, ...) sits ~20 rows below a Summary block, so generic header
+    detection (which only checks rows 0-3) can't find it."""
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        ws = wb["Equity"] if "Equity" in wb.sheetnames else wb[wb.sheetnames[0]]
+
+        header_row_idx, headers = None, None
+        for i, row in enumerate(ws.iter_rows(min_row=1, max_row=60, values_only=True), start=1):
+            cells = [str(c).strip().lower() if c else "" for c in row]
+            if "symbol" in cells and "isin" in cells and any("average price" in c for c in cells):
+                header_row_idx, headers = i, [str(c).strip() if c else "" for c in row]
+                break
+
+        if header_row_idx is None:
+            return None, "This doesn't look like a Zerodha Holdings export — couldn't find the Symbol/ISIN/Average Price header row."
+
+        col = {h: idx for idx, h in enumerate(headers) if h}
+        c_sym = col.get("Symbol")
+        c_isin = col.get("ISIN")
+        c_sector = col.get("Sector")
+        c_qty = col.get("Quantity Available")
+        c_avg = col.get("Average Price")
+        c_prev = col.get("Previous Closing Price")
+
+        portfolio, skipped_bonds = [], 0
+        for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
+            sym_raw = row[c_sym] if c_sym is not None else None
+            if not sym_raw or not str(sym_raw).strip():
+                continue
+            isin = str(row[c_isin]).strip() if c_isin is not None and row[c_isin] else ""
+
+            # Skip Sovereign Gold Bonds / govt securities — not equities, not analyzable here
+            if "SGB" in str(sym_raw).upper() or isin.startswith("IN002"):
+                skipped_bonds += 1
+                continue
+
+            qty = float(row[c_qty] or 0) if c_qty is not None else 0
+            avg = float(row[c_avg] or 0) if c_avg is not None else 0
+            prev_close = float(row[c_prev] or 0) if c_prev is not None else 0
+            sector = str(row[c_sector]).strip() if c_sector is not None and row[c_sector] else "N/A"
+            if qty <= 0:
+                continue
+
+            clean_sym = _clean_zerodha_symbol(sym_raw)
+            ticker = f"{clean_sym}.NS"
+            invested = round(qty * avg, 2)
+
+            portfolio.append({
+                "ticker": ticker,
+                "name": clean_sym,
+                "isin": isin,
+                "qty": max(1, int(round(qty))),
+                "buy_price": round(avg, 2),
+                "invested": invested,
+                "market_value": round(qty * prev_close, 2) if prev_close else invested,
+                "pnl_broker": round(qty * prev_close - invested, 2) if prev_close else 0.0,
+                "ltp": round(prev_close, 2),
+                "sector": sector,
+                "market_cap_type": "N/A",
+            })
+
+        if not portfolio:
+            return None, "No holdings found in the Zerodha file (or all rows were bonds/gold bonds, which aren't supported)."
+
+        note = f" ({skipped_bonds} bond/SGB row(s) skipped — not supported)" if skipped_bonds else ""
+        return portfolio, None if not note else ("__WARN__" + note)
+
+    except Exception as e:
+        return None, f"Could not parse Zerodha file: {str(e)[:300]}"
+
+
+def parse_angel_broking_holdings(file_bytes):
+    """Dedicated parser for Angel One's 'Equity Holdings Details' export.
+    Real header row (Company Name, ISIN, ..., Total Quantity, ..., Avg
+    Trading Price, ...) sits ~14 rows below a Summary block."""
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        ws = wb[wb.sheetnames[0]]
+
+        header_row_idx, headers = None, None
+        for i, row in enumerate(ws.iter_rows(min_row=1, max_row=60, values_only=True), start=1):
+            cells = [str(c).strip().lower() if c else "" for c in row]
+            if "company name" in cells and "isin" in cells and any("avg trading price" in c for c in cells):
+                header_row_idx, headers = i, [str(c).strip() if c else "" for c in row]
+                break
+
+        if header_row_idx is None:
+            return None, "This doesn't look like an Angel One Holdings export — couldn't find the Company Name/ISIN/Avg Trading Price header row."
+
+        col = {h: idx for idx, h in enumerate(headers) if h}
+        c_name = col.get("Company Name")
+        c_isin = col.get("ISIN")
+        c_sector = col.get("Sector")
+        c_qty = col.get("Total Quantity")
+        c_avg = col.get("Avg Trading Price")
+        c_ltp = col.get("LTP")
+
+        portfolio = []
+        for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
+            name_raw = row[c_name] if c_name is not None else None
+            if not name_raw or str(name_raw).strip().lower() in ("", "total", "nan"):
+                continue
+
+            isin = str(row[c_isin]).strip() if c_isin is not None and row[c_isin] else ""
+            qty = float(row[c_qty] or 0) if c_qty is not None else 0
+            avg = float(row[c_avg] or 0) if c_avg is not None else 0
+            ltp = float(row[c_ltp] or 0) if c_ltp is not None else 0
+            sector = str(row[c_sector]).strip() if c_sector is not None and row[c_sector] else "N/A"
+            if qty <= 0:
+                continue
+
+            name = str(name_raw).strip()
+            # Angel's Company Name is often abbreviated (e.g. "Samvardh. Mothe.")
+            # — try the offline known-companies map first, then live search.
+            ticker = resolve_ticker(name)
+            if not ticker or "." not in ticker:
+                matches = search_ticker_live(name)
+                if matches:
+                    ticker = matches[0][1]
+                else:
+                    ticker = re.sub(r'[^A-Z0-9]', '', name.upper()) + ".NS"
+
+            invested = round(qty * avg, 2)
+
+            portfolio.append({
+                "ticker": ticker,
+                "name": name,
+                "isin": isin,
+                "qty": max(1, int(round(qty))),
+                "buy_price": round(avg, 2),
+                "invested": invested,
+                "market_value": round(qty * ltp, 2) if ltp else invested,
+                "pnl_broker": round(qty * ltp - invested, 2) if ltp else 0.0,
+                "ltp": round(ltp, 2),
+                "sector": sector,
+                "market_cap_type": "N/A",
+            })
+
+        if not portfolio:
+            return None, "No holdings found in the Angel One file."
+        return portfolio, None
+
+    except Exception as e:
+        return None, f"Could not parse Angel One file: {str(e)[:300]}"
+
+
+def parse_broker_file(file_bytes, fname, broker_hint="auto"):
+    """Router: picks the right parser based on an explicit choice, or by
+    sniffing the file's headers for each broker's fingerprint columns."""
+    fname_lower = fname.lower()
+
+    def _looks_like(keywords):
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+            ws = wb[wb.sheetnames[0]] if "Equity" not in wb.sheetnames else wb["Equity"]
+            for row in ws.iter_rows(min_row=1, max_row=60, values_only=True):
+                cells = " ".join(str(c).lower() for c in row if c)
+                if all(kw in cells for kw in keywords):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    if broker_hint == "zerodha" or (broker_hint == "auto" and not fname_lower.endswith((".csv",)) and _looks_like(["symbol", "average price"])):
+        result, err = parse_zerodha_holdings(file_bytes)
+        if result is not None:
+            return result, err
+    if broker_hint == "angel" or (broker_hint == "auto" and _looks_like(["company name", "avg trading price"])):
+        return parse_angel_broking_holdings(file_bytes)
+    if broker_hint in ("zerodha", "angel"):
+        # explicit choice but dedicated parser found nothing — don't silently fall through
+        return None, "Could not find the expected columns for this broker format in the uploaded file."
+
+    return parse_master_template(file_bytes, fname)
+
+
 # ─────────────────────────────────────────────
 # PORTFOLIO ANALYSIS HELPERS
 # ─────────────────────────────────────────────
@@ -2072,30 +2261,47 @@ def render_add_portfolio_modal():
         </div>
     </div>""", unsafe_allow_html=True)
 
-    c1, c2 = st.columns([3,1])
+    c1, c2, c3 = st.columns([2,2,1])
     with c1:
         pf_name = st.text_input("Portfolio Name *", placeholder="e.g. Long Term Growth, Retirement Fund...", key="new_pf_name")
     with c2:
+        pf_holder = st.text_input("Account Holder Name", placeholder="e.g. Rahul Kumar, Priya (Spouse)...", key="new_pf_holder",
+                                   help="Whose demat account this is — shown alongside the portfolio everywhere.")
+    with c3:
         color_idx = st.selectbox("Color Tag", range(len(PORTFOLIO_COLORS)),
             format_func=lambda i: ["🔵 Blue","🟢 Green","🟡 Amber","🔴 Red","🟣 Purple","🩵 Cyan","🟠 Orange"][i],
             key="new_pf_color")
 
     st.markdown("""
     <div class="t-card" style="margin:12px 0;">
-        <div class="t-card-header"><div class="t-card-title">📂 UPLOAD BROKER FILE (MASTER TEMPLATE FORMAT)</div></div>
+        <div class="t-card-header"><div class="t-card-title">📂 UPLOAD BROKER FILE</div></div>
         <div style="padding:12px 16px;">
             <div style="font-family:var(--font-mono,'Fira Code',monospace);font-size:10px;color:var(--text-muted);margin-bottom:8px;">
-                Expected columns: <span style="color:#7a90a8;">Stock Name · ISIN · Total Qty · Avg Price · LTP · Invested Value · Market Value · P&L · P&L %</span>
+                Upload your Zerodha or Angel One holdings export directly — no reformatting needed.
+                Or use the Master Template below for other brokers.
             </div>
         </div>
     </div>""", unsafe_allow_html=True)
+
+    broker_choice = st.selectbox(
+        "Broker format",
+        ["Auto-detect", "Zerodha Holdings", "Angel One Holdings", "Generic / Master Template"],
+        key="new_pf_broker",
+        label_visibility="collapsed",
+    )
+    _broker_map = {
+        "Auto-detect": "auto",
+        "Zerodha Holdings": "zerodha",
+        "Angel One Holdings": "angel",
+        "Generic / Master Template": "generic",
+    }
 
     uploaded = st.file_uploader(
         "Upload file",
         type=["xlsx","xls","csv"],
         key="new_pf_file",
         label_visibility="collapsed",
-        help="Upload Excel/CSV matching master template columns."
+        help="Zerodha: Console → Portfolio → Holdings → download Excel. Angel One: download your Holdings statement."
     )
 
     if uploaded:
@@ -2115,7 +2321,7 @@ def render_add_portfolio_modal():
     with ca:
         if st.button("✕ Cancel", key="cancel_add_pf", use_container_width=True):
             st.session_state.show_add_portfolio = False
-            for k in ["new_pf_name","new_pf_color","new_pf_file"]: st.session_state.pop(k, None)
+            for k in ["new_pf_name","new_pf_holder","new_pf_color","new_pf_file"]: st.session_state.pop(k, None)
             st.rerun()
     with cb:
         if st.button("🚀 Create Portfolio", key="create_pf_btn", use_container_width=True, type="primary"):
@@ -2123,12 +2329,20 @@ def render_add_portfolio_modal():
                 st.error("Please enter a portfolio name.")
                 return
 
-            stocks, parse_error = [], None
+            stocks, parse_error, parse_warning = [], None, None
             if uploaded is not None:
                 try:
                     file_bytes = uploaded.read()
-                    parsed, err = parse_master_template(file_bytes, uploaded.name)
-                    if err:
+                    if uploaded.name.lower().endswith(".csv") and _broker_map[broker_choice] != "generic":
+                        # dedicated parsers are Excel-only (they need openpyxl row scanning);
+                        # CSV always goes through the generic column-matcher
+                        parsed, err = parse_master_template(file_bytes, uploaded.name)
+                    else:
+                        parsed, err = parse_broker_file(file_bytes, uploaded.name, _broker_map[broker_choice])
+                    if err and str(err).startswith("__WARN__"):
+                        parse_warning = err.replace("__WARN__", "").strip()
+                        stocks = parsed or []
+                    elif err:
                         parse_error = err
                     else:
                         stocks = parsed or []
@@ -2141,6 +2355,7 @@ def render_add_portfolio_modal():
 
             new_pf = {
                 "name": pf_name.strip(),
+                "holder": pf_holder.strip(),
                 "color": PORTFOLIO_COLORS[color_idx],
                 "stocks": stocks,
                 "results": [],
@@ -2155,9 +2370,11 @@ def render_add_portfolio_modal():
             st.session_state.portfolios.append(new_pf)
             st.session_state.active_portfolio_idx = len(st.session_state.portfolios) - 1
             st.session_state.show_add_portfolio = False
-            for k in ["new_pf_name","new_pf_color","new_pf_file"]: st.session_state.pop(k, None)
+            for k in ["new_pf_name","new_pf_holder","new_pf_color","new_pf_file"]: st.session_state.pop(k, None)
             save_portfolios()  # persist to equitex_data.json
             st.success(f"✅ Portfolio '{pf_name}' created with {len(stocks)} stocks!")
+            if parse_warning:
+                st.info(f"ℹ️ {parse_warning}")
             st.rerun()
 
     st.markdown("---")
@@ -2216,7 +2433,10 @@ def render_stock_summary_block(portfolios):
                 st.markdown(f"""<div class="cmp-card">
                     <div class="cmp-hdr">
                         <div style="width:8px;height:8px;border-radius:50%;background:{color};"></div>
-                        <div class="cmp-name">{pf['name']}</div>
+                        <div>
+                            <div class="cmp-name">{pf['name']}</div>
+                            {f'<div style="font-size:10px;color:var(--text-muted);">{pf.get("holder","")}</div>' if pf.get('holder') else ''}
+                        </div>
                         <div style="margin-left:auto;font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:9px;color:var(--text-muted);">{len(pf.get('stocks',[]))} STOCKS</div>
                     </div>
                     <div style="padding:12px 16px;">
@@ -2309,7 +2529,7 @@ def page_overview():
         render_portfolio_tab(portfolios[0], 0)
         return
 
-    tab_labels = [f"💼 {pf['name'].upper()}" for pf in portfolios]
+    tab_labels = [f"💼 {pf['name'].upper()}" + (f" · {pf['holder']}" if pf.get('holder') else "") for pf in portfolios]
     tabs = st.tabs(tab_labels)
     for i,(pf,tab) in enumerate(zip(portfolios, tabs)):
         with tab:
@@ -3271,7 +3491,10 @@ def page_compare():
             st.markdown(f"""<div class="cmp-card" style="{border}">
                 <div class="cmp-hdr" style="{'background:rgba(0,200,122,0.06);' if is_best else ''}">
                     <div style="width:9px;height:9px;border-radius:50%;background:{color};"></div>
-                    <div class="cmp-name">{pf['name']}</div>
+                    <div>
+                        <div class="cmp-name">{pf['name']}</div>
+                        {f'<div style="font-size:10px;color:var(--text-muted);">{pf.get("holder","")}</div>' if pf.get('holder') else ''}
+                    </div>
                     {'<div style="background:rgba(0,200,122,0.15);color:#00c87a;font-family:\'Fira Code\',monospace;font-size:9px;font-weight:700;padding:2px 7px;border-radius:2px;margin-left:auto;">🏆 BEST</div>' if is_best else f'<div style="margin-left:auto;font-family:\'Fira Code\',monospace;font-size:9px;color:var(--text-muted);">{len(stocks)} STKS</div>'}
                 </div>
                 <div style="padding:12px 16px;">

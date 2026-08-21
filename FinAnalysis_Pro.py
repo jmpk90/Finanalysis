@@ -864,6 +864,7 @@ def portfolio_color(idx): return PORTFOLIO_COLORS[idx % len(PORTFOLIO_COLORS)]
 # ─────────────────────────────────────────────
 # DIVIDEND FUNCTIONS
 # ─────────────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_dividend_data(ticker_symbol, qty=0):
     """Fetch 3 years dividend history for a ticker."""
     result = {
@@ -1157,6 +1158,15 @@ def fetch_screener_data(ticker):
     return R
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_ticker_info_cached(ticker):
+    """Cached .info lookup — used for peer comparison so the same 4 sector
+    peers aren't re-fetched from Yahoo on every single stock analysis."""
+    try:
+        return yf.Ticker(ticker).info
+    except Exception:
+        return {}
+
 def peer_comparison_score(ticker, info, screener):
     """Compare stock vs sector peers. Returns 0-15 pts."""
     PEERS = {
@@ -1188,7 +1198,7 @@ def peer_comparison_score(ticker, info, screener):
     peer_details = []
     for p in peers:
         try:
-            pi = yf.Ticker(p).info
+            pi = _fetch_ticker_info_cached(p)
             peer_details.append({"ticker":p,"name":safe_get(pi.get("shortName"),p),
                 "pe":safe_get(pi.get("trailingPE")), "roe":safe_get(pi.get("returnOnEquity")),
                 "sg":safe_get(pi.get("revenueGrowth")), "r1y":safe_get(pi.get("52WeekChange"))})
@@ -1635,6 +1645,53 @@ def resolve_ticker(name):
     clean = re.sub(r'[^A-Z0-9]', '', re.sub(r'\b(LTD|LIMITED|PVT|PRIVATE|INDIA|INDUSTRIES|CORP|CORPORATION|CO|COMPANY)\b', '', nu).strip())
     return f"{clean}.NS" if clean else None
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_ticker_live(query):
+    """Live company-name → ticker search using Yahoo Finance's public search
+    endpoint. Returns a list of (label, ticker) for NSE/BSE-listed equities.
+    Cached for 1hr per query so repeated searches don't hit Yahoo every keystroke."""
+    if not query or len(query.strip()) < 2:
+        return []
+    try:
+        resp = requests.get(
+            "https://query1.finance.yahoo.com/v1/finance/search",
+            params={"q": query.strip(), "quotesCount": 8, "newsCount": 0, "listsCount": 0},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        quotes = resp.json().get("quotes", [])
+    except Exception:
+        return []
+
+    results = []
+    for q in quotes:
+        sym = q.get("symbol", "")
+        if not (sym.endswith(".NS") or sym.endswith(".BO")):
+            continue
+        name = q.get("shortname") or q.get("longname") or sym
+        exch = "NSE" if sym.endswith(".NS") else "BSE"
+        results.append((f"{name} — {sym} ({exch})", sym))
+    return results
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_stock_data_cached(ticker, period):
+    """Cached wrapper around yfinance so repeated analyses / reruns within
+    15 minutes don't re-hit Yahoo and trigger rate limiting.
+    Returns (df, info, error_message)."""
+    try:
+        stock = yf.Ticker(ticker)
+        df_raw = stock.history(period=period)
+        info = stock.info
+        if df_raw.empty:
+            return None, None, f'No data for "{ticker}". Check the symbol or try again in a minute.'
+        return df_raw, info, None
+    except Exception as e:
+        msg = str(e)
+        if "Too Many Requests" in msg or "rate limit" in msg.lower() or "429" in msg:
+            return None, None, "Yahoo Finance is rate-limiting requests right now. Please wait 30-60 seconds and try again — results are cached for 15 minutes once fetched successfully, so this shouldn't repeat often."
+        return None, None, msg[:200]
+
 def parse_master_template(file_bytes, fname):
     """
     Robust parser for master template and common Indian broker formats.
@@ -1851,12 +1908,9 @@ def analyze_single_portfolio_stock(stock_item):
         "headlines":[],"sent_label":"Neutral","div_data":None,
     }
     try:
-        stock  = yf.Ticker(ticker)
-        df_raw = stock.history(period="2y")
-        info   = stock.info
-
-        if df_raw.empty:
-            result["error"] = f"No data for {ticker}"
+        df_raw, info, fetch_err = fetch_stock_data_cached(ticker, "2y")
+        if fetch_err:
+            result["error"] = fetch_err
             return result
 
         df = compute_indicators(df_raw.copy())
@@ -2719,40 +2773,60 @@ def page_analyzer():
     if "az_ticker"  not in st.session_state: st.session_state.az_ticker  = ""
     if "az_period"  not in st.session_state: st.session_state.az_period  = "3y"
     if "az_result"  not in st.session_state: st.session_state.az_result  = None
+    if "az_query"   not in st.session_state: st.session_state.az_query   = ""
 
     c1,c2,c3 = st.columns([3,1,1])
     with c1:
-        ticker_input = st.text_input(
-            "Ticker",
-            value=st.session_state.az_ticker,
-            placeholder="e.g. RELIANCE.NS, TCS.NS, HDFCBANK.NS",
+        query_input = st.text_input(
+            "Search company or ticker",
+            value=st.session_state.az_query,
+            placeholder="e.g. Reliance, HDFC Bank, TCS.NS…",
             label_visibility="collapsed",
-            key="analyzer_ticker"
+            key="analyzer_query"
         )
     with c2:
         period = st.selectbox("Period", [
             "3mo","6mo","1y","2y","3y","5y"
         ], index=2, label_visibility="collapsed", key="analyzer_period_sel")
     with c3:
-        do_analyze = st.button("🔍 Analyze", use_container_width=True, key="do_analyze")
+        do_search = st.button("🔍 Search", use_container_width=True, key="do_search")
 
-    # Only re-fetch when the user explicitly clicks Analyze
-    if do_analyze and ticker_input.strip():
-        st.session_state.az_ticker = ticker_input.strip().upper()
+    resolved_ticker = None
+    if query_input.strip():
+        # Already looks like a real ticker (has .NS/.BO or is all-caps short code) → skip live search
+        qu = query_input.strip().upper()
+        if qu.endswith(".NS") or qu.endswith(".BO"):
+            resolved_ticker = qu
+        elif do_search or query_input != st.session_state.az_query:
+            st.session_state.az_query = query_input
+            with st.spinner("Searching NSE/BSE…"):
+                matches = search_ticker_live(query_input.strip())
+            if not matches:
+                # Fall back to the offline known-companies map / heuristic guess
+                fallback = resolve_ticker(query_input)
+                if fallback:
+                    st.markdown(f'<div class="info-block">No live match found — trying best guess: <b>{fallback}</b></div>', unsafe_allow_html=True)
+                    resolved_ticker = fallback
+                else:
+                    st.markdown('<div class="warn-block">⚠️ No matching NSE/BSE company found. Try a shorter or different name.</div>', unsafe_allow_html=True)
+            else:
+                labels = [m[0] for m in matches]
+                picked = st.selectbox("Select the company", labels, key="analyzer_pick")
+                resolved_ticker = dict(matches)[picked] if picked in labels else matches[0][1]
+
+    do_analyze = resolved_ticker is not None and (do_search or resolved_ticker != st.session_state.az_ticker)
+
+    # Only re-fetch when we have a resolved ticker and it's new (or user re-searched)
+    if do_analyze:
+        st.session_state.az_ticker = resolved_ticker
         st.session_state.az_period = period
         st.session_state.az_result = None   # clear stale result
 
         with st.spinner(f"Fetching {st.session_state.az_ticker}…"):
-            try:
-                stock  = yf.Ticker(st.session_state.az_ticker)
-                df_raw = stock.history(period=period)
-                info   = stock.info
-            except Exception as e:
-                st.markdown(f'<div class="danger-block">❌ Could not fetch data: {str(e)[:200]}</div>', unsafe_allow_html=True)
-                return
+            df_raw, info, err = fetch_stock_data_cached(st.session_state.az_ticker, period)
 
-        if df_raw.empty:
-            st.markdown(f'<div class="warn-block">⚠️ No data for "{st.session_state.az_ticker}". Try with .NS suffix (e.g. RELIANCE.NS)</div>', unsafe_allow_html=True)
+        if err:
+            st.markdown(f'<div class="danger-block">❌ {err}</div>', unsafe_allow_html=True)
             return
 
         df          = compute_indicators(df_raw.copy())
@@ -3398,6 +3472,40 @@ def page_dashboard():
                     <div style="width:{pct_val}%;height:100%;background:{color};border-radius:3px;"></div>
                 </div>
             </div>""", unsafe_allow_html=True)
+
+    # ── Backup & Restore — the safety net for browser-only storage ──
+    st.markdown('<br>', unsafe_allow_html=True)
+    with st.expander("💾 Backup & Restore — your data lives only in this browser"):
+        st.markdown("""<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+            Your portfolios, wealth profile, and mutual fund data are saved only in <b>this browser</b> —
+            nothing is shared with other visitors, and nothing is sent to a server. That also means
+            clearing your browser data, switching browsers, or using a different device will lose it
+            unless you've downloaded a backup below.
+        </div>""", unsafe_allow_html=True)
+
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            from equitex_store import export_full_backup
+            st.download_button(
+                "⬇ Download Backup",
+                data=export_full_backup(),
+                file_name=f"equitex_backup_{_dt.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+                use_container_width=True,
+                key="dl_full_backup",
+            )
+        with bcol2:
+            restore_file = st.file_uploader("Restore from backup", type=["json"],
+                                             label_visibility="collapsed", key="restore_upload")
+            if restore_file is not None:
+                from equitex_store import restore_full_backup
+                ok, msg = restore_full_backup(restore_file.read().decode("utf-8"))
+                if ok:
+                    st.success(msg)
+                    st.session_state._restored = False  # force reload from storage
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 
 # ═══════════════════════════════════════════════════════════════════

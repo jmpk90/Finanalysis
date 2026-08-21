@@ -292,7 +292,7 @@ def render_profile_section():
 
     sc1, sc2 = st.columns([1,3])
     with sc1:
-        save_clicked = st.button("💾 Save Profile", key="fa_save_profile", type="primary", use_container_width=True)
+        save_clicked = st.button("💾 Save Profile", key="fa_save_profile", type="primary", width='stretch')
     with sc2:
         import datetime as _dt
         save_path = st.session_state.get("fa_save_path","")
@@ -358,7 +358,7 @@ def render_add_entry_form(section_key, mk, label_options=None, label_prefix=""):
 
     form_key = f"add_form_{section_key}_{mk}"
     if not st.session_state.get(f"show_{form_key}"):
-        if st.button(f"＋ Add {label_prefix}", key=f"btn_{form_key}", use_container_width=False):
+        if st.button(f"＋ Add {label_prefix}", key=f"btn_{form_key}", width='content'):
             st.session_state[f"show_{form_key}"] = True
             st.rerun()
         return False
@@ -389,7 +389,7 @@ def render_add_entry_form(section_key, mk, label_options=None, label_prefix=""):
         sa, sb, _ = st.columns([1,1,4])
         saved = False
         with sa:
-            if st.button("✅ Save", key=f"save_{form_key}", type="primary", use_container_width=True):
+            if st.button("✅ Save", key=f"save_{form_key}", type="primary", width='stretch'):
                 if entry_label and entry_amt > 0:
                     budget = get_month_budget(mk)
                     budget.setdefault(section_key, [])
@@ -399,7 +399,7 @@ def render_add_entry_form(section_key, mk, label_options=None, label_prefix=""):
                     saved = True
                     st.rerun()
         with sb:
-            if st.button("✕ Cancel", key=f"cancel_{form_key}", use_container_width=True):
+            if st.button("✕ Cancel", key=f"cancel_{form_key}", width='stretch'):
                 st.session_state[f"show_{form_key}"] = False
                 st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
@@ -768,7 +768,7 @@ def render_assets_section():
                 annotations=[dict(text=fmt(total_val), x=0.5, y=0.5,
                     font=dict(size=11, color="#e2e8f0", family="DM Mono"), showarrow=False)]
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
 
 def _build_legacy_assets(p):
@@ -1049,7 +1049,7 @@ def render_family_dashboard():
                 yaxis=dict(gridcolor="#1e2d46", title="₹ Lakhs"),
                 margin=dict(l=30,r=10,t=10,b=60),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("Add assets to see the breakdown chart.")
 
@@ -1164,7 +1164,7 @@ def render_goals_section():
                         <span style="color:var(--text-muted);">{fmt(monthly_needed)}/mo needed</span>
                     </div>
                 </div>""", unsafe_allow_html=True)
-                if st.button("🗑 Remove", key=f"del_goal_{i}", use_container_width=True):
+                if st.button("🗑 Remove", key=f"del_goal_{i}", width='stretch'):
                     goal_list.pop(i); set_profile("goal_list", goal_list); fa_save(); st.rerun()
     else:
         st.info("No goals set yet. Add your first financial goal above.")
@@ -1318,7 +1318,7 @@ def render_projections_section():
                 annotations=[dict(text=fmt(cur_gross-cur_debt),x=0.5,y=0.5,
                     font=dict(size=11,color="#e2e8f0",family="DM Mono"),showarrow=False)]
             )
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width='stretch')
 
     with col_bar:
         plot_years = [y for y in years_list if y<=horizon]
@@ -1337,7 +1337,7 @@ def render_projections_section():
             legend=dict(bgcolor="rgba(0,0,0,0)",font=dict(size=8),orientation="h",y=-0.2),
             xaxis=dict(gridcolor="#1e2d46"), yaxis=dict(gridcolor="#1e2d46",title="₹ Lakhs"),
             height=320, margin=dict(l=30,r=10,t=40,b=30))
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width='stretch')
 
     # Retirement readiness
     self_age      = p.get("self_age", 30)
@@ -1505,7 +1505,7 @@ def render_ai_advisor_section():
             entered = st.text_input("Paste Groq API key", type="password", key="fa_groq_key_input", placeholder="gsk_...")
         with col_btn:
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Save & Activate", key="fa_save_groq", type="primary", use_container_width=True):
+            if st.button("Save & Activate", key="fa_save_groq", type="primary", width='stretch'):
                 if entered.strip().startswith("gsk_"):
                     st.session_state.groq_api_key = entered.strip()
                     st.success("✅ Groq key saved!")
@@ -1535,7 +1535,7 @@ def render_ai_advisor_section():
     q_cols = st.columns(4)
     for i, (label, prompt) in enumerate(GUIDED_QUESTIONS):
         with q_cols[i%4]:
-            if st.button(label, key=f"fa_guided_{i}", use_container_width=True):
+            if st.button(label, key=f"fa_guided_{i}", width='stretch'):
                 st.session_state.fa_pending_q = prompt
                 st.rerun()
 
@@ -1568,9 +1568,9 @@ def render_ai_advisor_section():
         placeholder="e.g. 'Am I on track for retirement?' · 'How to reduce my tax?'")
 
     c1, c2, _ = st.columns([1,1,4])
-    with c1: send = st.button("📤 Ask", key="fa_send", type="primary", use_container_width=True)
+    with c1: send = st.button("📤 Ask", key="fa_send", type="primary", width='stretch')
     with c2:
-        if st.button("🗑 Clear", key="fa_clear_chat", use_container_width=True):
+        if st.button("🗑 Clear", key="fa_clear_chat", width='stretch'):
             st.session_state.fa_chat_history = []; st.rerun()
 
     if send and user_q.strip():
@@ -1695,7 +1695,7 @@ def render_overview_section():
                     annotations=[dict(text=fmt(total_income),x=0.5,y=0.5,
                         font=dict(size=10,color="#e2e8f0",family="DM Mono"),showarrow=False)]
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
     else:
         st.info("Add assets in the Assets tab to see your breakdown here.")
 

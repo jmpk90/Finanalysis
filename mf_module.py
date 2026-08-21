@@ -831,7 +831,7 @@ def page_mf_portfolio():
         else:
             rh1, rh2 = st.columns([4, 1])
             with rh2:
-                if st.button("🔄 Refresh NAVs", key="refresh_navs", use_container_width=True):
+                if st.button("🔄 Refresh NAVs", key="refresh_navs", width='stretch'):
                     with st.spinner("Fetching live NAVs for all funds..."):
                         updated = 0
                         for acc_id, acc in store.get("accounts", {}).items():
@@ -865,7 +865,7 @@ def page_mf_portfolio():
                     f'<b>{len(funds)}</b> funds · <b>{len(accounts)}</b> account(s)</div>',
                     unsafe_allow_html=True)
             with rh2:
-                if st.button("🔄 Refresh NAVs", key="ov_refresh", use_container_width=True):
+                if st.button("🔄 Refresh NAVs", key="ov_refresh", width='stretch'):
                     for acc in accounts.values():
                         acc["funds"] = refresh_navs(acc.get("funds", []))
                     store["funds"]        = refresh_navs(store.get("funds", []))
@@ -1198,7 +1198,7 @@ def page_mf_portfolio():
 
             col1, col2 = st.columns([1,4])
             with col1:
-                if st.button("🚀 Import Funds", key="do_import", type="primary", use_container_width=True):
+                if st.button("🚀 Import Funds", key="do_import", type="primary", width='stretch'):
                     try:
                         with st.spinner("Importing..."):
                             new_funds = cas_to_funds(pc)
@@ -1491,7 +1491,7 @@ def page_mf_portfolio():
                         yaxis=dict(gridcolor="rgba(100,120,150,0.15)", tickprefix="Rs"),
                         showlegend=False,
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
             except Exception:
                 pass
 
@@ -1540,7 +1540,7 @@ def _donut(funds):
             margin=dict(l=5,r=5,t=5,b=5),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     except Exception:
         pass
 

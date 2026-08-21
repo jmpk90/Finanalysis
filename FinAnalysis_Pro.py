@@ -2196,7 +2196,7 @@ def render_navbar():
             horizontal=True, label_visibility="collapsed", key="main_nav"
         )
     with col_actions:
-        if st.button("＋ Add Portfolio", key="nav_add_pf", use_container_width=True, type="primary"):
+        if st.button("＋ Add Portfolio", key="nav_add_pf", width='stretch', type="primary"):
             st.session_state.show_add_portfolio = True
             st.rerun()
 
@@ -2319,12 +2319,12 @@ def render_add_portfolio_modal():
     st.markdown("<br>", unsafe_allow_html=True)
     ca, cb, _ = st.columns([1,1,2])
     with ca:
-        if st.button("✕ Cancel", key="cancel_add_pf", use_container_width=True):
+        if st.button("✕ Cancel", key="cancel_add_pf", width='stretch'):
             st.session_state.show_add_portfolio = False
             for k in ["new_pf_name","new_pf_holder","new_pf_color","new_pf_file"]: st.session_state.pop(k, None)
             st.rerun()
     with cb:
-        if st.button("🚀 Create Portfolio", key="create_pf_btn", use_container_width=True, type="primary"):
+        if st.button("🚀 Create Portfolio", key="create_pf_btn", width='stretch', type="primary"):
             if not pf_name or not pf_name.strip():
                 st.error("Please enter a portfolio name.")
                 return
@@ -2553,22 +2553,25 @@ def render_portfolio_tab(pf, pf_idx):
             &nbsp;·&nbsp; P&L: <span style="color:{pnl_col};">₹{total_pnl_broker:+,.0f}</span>
         </div>""", unsafe_allow_html=True)
     with col_btns:
-        bc1,bc2,bc3,bc4 = st.columns(4)
+        bc1,bc2,bc3,bc4,bc5 = st.columns(5)
         with bc1:
             if st.button("＋ Stock", key=f"add_stock_{pf_idx}"):
                 st.session_state[f"show_add_stock_{pf_idx}"] = True
         with bc2:
+            if st.button("📂 Import", key=f"import_stocks_{pf_idx}"):
+                st.session_state[f"show_import_stocks_{pf_idx}"] = True
+        with bc3:
             if st.button("⊡ Sample", key=f"sample_{pf_idx}"):
                 pf["stocks"] = DEFAULT_PORTFOLIO.copy()
                 pf["results"] = []; pf["analyzed"] = False
                 save_portfolios()
                 st.rerun()
-        with bc3:
+        with bc4:
             if st.button("⊘ Clear", key=f"clear_{pf_idx}"):
                 pf["stocks"] = []; pf["results"] = []; pf["analyzed"] = False
                 save_portfolios()
                 st.rerun()
-        with bc4:
+        with bc5:
             if st.button("🗑 Delete", key=f"del_pf_{pf_idx}", type="secondary"):
                 st.session_state[f"confirm_del_{pf_idx}"] = True
 
@@ -2589,6 +2592,49 @@ def render_portfolio_tab(pf, pf_idx):
             if st.button("✗ Cancel", key=f"no_del_{pf_idx}"):
                 st.session_state.pop(f"confirm_del_{pf_idx}", None)
                 st.rerun()
+
+    if st.session_state.get(f"show_import_stocks_{pf_idx}"):
+        with st.expander("📂 IMPORT HOLDINGS FROM FILE", expanded=True):
+            st.markdown('<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Upload your Zerodha or Angel One holdings export — parsed stocks are added to this portfolio (existing holdings are kept).</div>', unsafe_allow_html=True)
+            imp_broker = st.selectbox(
+                "Broker format", ["Auto-detect", "Zerodha Holdings", "Angel One Holdings", "Generic / Master Template"],
+                key=f"imp_broker_{pf_idx}", label_visibility="collapsed",
+            )
+            _imp_broker_map = {"Auto-detect": "auto", "Zerodha Holdings": "zerodha",
+                                "Angel One Holdings": "angel", "Generic / Master Template": "generic"}
+            imp_file = st.file_uploader("Upload file", type=["xlsx","xls","csv"],
+                                         key=f"imp_file_{pf_idx}", label_visibility="collapsed")
+            ic1, ic2, _ = st.columns([1,1,3])
+            with ic1:
+                if st.button("✅ Import", key=f"do_import_{pf_idx}", type="primary"):
+                    if imp_file is None:
+                        st.error("Choose a file first.")
+                    else:
+                        try:
+                            fbytes = imp_file.read()
+                            if imp_file.name.lower().endswith(".csv") and _imp_broker_map[imp_broker] != "generic":
+                                parsed, err = parse_master_template(fbytes, imp_file.name)
+                            else:
+                                parsed, err = parse_broker_file(fbytes, imp_file.name, _imp_broker_map[imp_broker])
+                            warn = None
+                            if err and str(err).startswith("__WARN__"):
+                                warn = err.replace("__WARN__", "").strip(); err = None
+                            if err:
+                                st.error(f"❌ {err}")
+                            else:
+                                pf["stocks"].extend(parsed or [])
+                                pf["results"] = []; pf["analyzed"] = False
+                                save_portfolios()
+                                st.session_state[f"show_import_stocks_{pf_idx}"] = False
+                                st.success(f"✅ Imported {len(parsed or [])} stocks into '{pf['name']}'.")
+                                if warn: st.info(f"ℹ️ {warn}")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Could not import: {str(e)[:300]}")
+            with ic2:
+                if st.button("✕ Cancel", key=f"cancel_import_{pf_idx}"):
+                    st.session_state[f"show_import_stocks_{pf_idx}"] = False
+                    st.rerun()
 
     if st.session_state.get(f"show_add_stock_{pf_idx}"):
         with st.expander("＋ ADD STOCK MANUALLY", expanded=True):
@@ -2648,7 +2694,7 @@ def render_portfolio_tab(pf, pf_idx):
             'Allow 5–10 seconds per stock.</div>',
             unsafe_allow_html=True
         )
-        if st.button(f"🔍 Analyze {pf['name']} Portfolio", key=f"analyze_{pf_idx}", use_container_width=True, type="primary"):
+        if st.button(f"🔍 Analyze {pf['name']} Portfolio", key=f"analyze_{pf_idx}", width='stretch', type="primary"):
             total    = len(stocks)
             progress = st.progress(0, text=f"Starting analysis — 0 / {total} stocks...")
             status   = st.empty()
@@ -2778,7 +2824,7 @@ def render_portfolio_results(results, pf, pf_idx):
                     font-weight:700;padding:3px 8px;border-radius:4px;flex-shrink:0;">{dec}</span>
                 </div>""", unsafe_allow_html=True)
             with row_c2:
-                if st.button("◆ Analyze", key=btn_key, use_container_width=True):
+                if st.button("◆ Analyze", key=btn_key, width='stretch'):
                     existing = dict(r)
                     existing["company_name"] = r.get("name", ticker)
                     existing["dec_col"]  = dec_col
@@ -2871,9 +2917,9 @@ def render_portfolio_results(results, pf, pf_idx):
         st.download_button("⬇ Export Excel", data=excel_data,
                            file_name=f"{pf['name']}_analysis.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           use_container_width=True)
+                           width='stretch')
     with ec2:
-        if st.button("🔬 Deep Dive", key=f"deep_{pf_idx}", use_container_width=True):
+        if st.button("🔬 Deep Dive", key=f"deep_{pf_idx}", width='stretch'):
             st.session_state[f"show_deep_{pf_idx}"] = not st.session_state.get(f"show_deep_{pf_idx}", False)
             st.rerun()
 
@@ -2942,7 +2988,7 @@ def render_deep_stock(r):
 
         # Chart
         if r.get("df") is not None and not r["df"].empty:
-            st.plotly_chart(build_stock_chart(r["df"], r["buy_price"], r["ticker"]), use_container_width=True)
+            st.plotly_chart(build_stock_chart(r["df"], r["buy_price"], r["ticker"]), width='stretch')
 
         # Scorecard
         tc1,tc2 = st.columns(2)
@@ -3009,7 +3055,7 @@ def page_analyzer():
             "3mo","6mo","1y","2y","3y","5y"
         ], index=2, label_visibility="collapsed", key="analyzer_period_sel")
     with c3:
-        do_search = st.button("🔍 Search", use_container_width=True, key="do_search")
+        do_search = st.button("🔍 Search", width='stretch', key="do_search")
 
     resolved_ticker = None
     if query_input.strip():
@@ -3216,7 +3262,7 @@ def page_analyzer():
             # Build enhanced chart
             st.plotly_chart(
                 build_chart_enhanced(df_view, bp, show_fib=show_fib, show_sr=show_sr, term_view=term_view),
-                use_container_width=True
+                width='stretch'
             )
 
             # ── Term-specific interpretation ──────────────────
@@ -3714,7 +3760,7 @@ def page_dashboard():
                 data=export_full_backup(),
                 file_name=f"equitex_backup_{_dt.now().strftime('%Y%m%d')}.json",
                 mime="application/json",
-                use_container_width=True,
+                width='stretch',
                 key="dl_full_backup",
             )
         with bcol2:

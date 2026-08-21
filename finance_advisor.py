@@ -1967,41 +1967,23 @@ def page_finance():
         </div>""", unsafe_allow_html=True)
     with hcol2:
         if p.get("self_name"):
-            import datetime as _dt
             st.markdown(f"""<div style="background:var(--bg-card);border:1px solid var(--accent-green);
                 border-radius:8px;padding:8px 14px;margin-top:12px;font-size:11px;">
                 <span style="color:var(--accent-green);font-weight:600;">✅ {p.get('self_name')}</span>
                 {"  +  <span style='color:var(--accent-gold);font-weight:600;'>" + p.get('spouse_name','') + "</span>" if p.get('include_spouse') and p.get('spouse_name') else ""}
-                <span style="color:var(--text-muted);margin-left:8px;">saved to <code style="font-size:10px;color:var(--accent-blue);">equitex_profile.json</code></span>
+                <span style="color:var(--text-muted);margin-left:8px;">— full backup available on the Dashboard</span>
             </div>""", unsafe_allow_html=True)
-            profile_json = json.dumps(p, indent=2, default=str)
-            fname = f"equitex_{p.get('self_name','profile').replace(' ','_')}_{_dt.date.today()}.json"
-            st.download_button("⬇️ Backup", data=profile_json, file_name=fname,
-                mime="application/json", key="fa_dl_backup")
 
-    # ── Backup/Import ─────────────────────────────────────────
-    with st.expander("📂 Restore from backup / Import Excel", expanded=not p.get("self_name")):
-        rtab1, rtab2 = st.tabs(["🔄 Restore JSON backup", "📥 Import Excel template"])
-        with rtab1:
-            bk = st.file_uploader("Upload JSON backup", type=["json"],
-                key="fa_backup_upload", label_visibility="collapsed")
-            if bk:
-                try:
-                    restored = json.loads(bk.read().decode("utf-8"))
-                    if isinstance(restored, dict) and restored.get("self_name"):
-                        st.session_state.fa_profile = restored
-                        st.session_state.fa_loaded  = True
-                        for k in [k for k in list(st.session_state.keys())
-                                  if k.startswith("fa_") and k not in
-                                  ("fa_profile","fa_loaded","fa_backup_upload","fa_chat_history")]:
-                            del st.session_state[k]
-                        fa_save()
-                        st.success(f"✅ Restored {restored.get('self_name')}")
-                        st.rerun()
-                    else: st.error("Doesn't look like an EQUITEX backup.")
-                except Exception as e: st.error(f"Could not read backup: {e}")
-        with rtab2:
-            render_template_import_inner()
+    # ── Import from Excel template ─────────────────────────────
+    with st.expander("📥 Import from Excel Template", expanded=not p.get("self_name")):
+        st.markdown(
+            '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">'
+            'For a full backup/restore covering portfolios, wealth profile, and mutual funds together, '
+            'use the <b>💾 Backup & Restore</b> section on the Dashboard instead — that\'s the one place '
+            'that saves and restores everything at once.</div>',
+            unsafe_allow_html=True
+        )
+        render_template_import_inner()
 
     # ── Main tabs ─────────────────────────────────────────────
     tabs = st.tabs([

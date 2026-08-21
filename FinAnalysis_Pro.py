@@ -1693,6 +1693,37 @@ def fetch_stock_data_cached(ticker, period):
             return None, None, "Yahoo Finance is rate-limiting requests right now. Please wait 30-60 seconds and try again — results are cached for 15 minutes once fetched successfully, so this shouldn't repeat often."
         return None, None, msg[:200]
 
+def quick_ltp(ticker):
+    """Fast, lightweight current-price fetch — just the last close price,
+    reusing the same 15-min cache as full analysis, but WITHOUT running
+    technical/fundamental scoring, news, or dividend history. Used to
+    populate Current Value right at import time, since waiting for a
+    full 'Analyze Portfolio' run just to see a live price is unnecessary
+    overhead. Returns 0.0 on failure (caller falls back gracefully)."""
+    try:
+        df_raw, _info, err = fetch_stock_data_cached(ticker, "5d")
+        if err or df_raw is None or df_raw.empty:
+            return 0.0
+        return float(df_raw["Close"].iloc[-1])
+    except Exception:
+        return 0.0
+
+
+def refresh_current_values(stocks):
+    """Populate market_value/pnl_broker for a list of stock dicts using a
+    quick live-price fetch per ticker — called right after import so
+    Current Value and Net Worth are accurate immediately, not only after
+    a full manual Analyze run."""
+    for s in stocks:
+        ltp = quick_ltp(s.get("ticker", ""))
+        if ltp > 0:
+            qty = s.get("qty", 0)
+            s["ltp"] = round(ltp, 2)
+            s["market_value"] = round(qty * ltp, 2)
+            s["pnl_broker"] = round(s["market_value"] - s.get("invested", 0), 2)
+    return stocks
+
+
 def parse_master_template(file_bytes, fname):
     """
     Robust parser for master template and common Indian broker formats.
@@ -2353,6 +2384,10 @@ def render_add_portfolio_modal():
                 st.error(f"❌ Could not parse file: {parse_error}")
                 return
 
+            if stocks:
+                with st.spinner(f"Fetching live prices for {len(stocks)} stocks…"):
+                    stocks = refresh_current_values(stocks)
+
             new_pf = {
                 "name": pf_name.strip(),
                 "holder": pf_holder.strip(),
@@ -2387,11 +2422,18 @@ def render_stock_summary_block(portfolios):
     This is the ONE place these numbers are computed and shown — used by the
     Dashboard so the Portfolio tab doesn't have to repeat them."""
     all_results = []
-    for pf in portfolios: all_results.extend(pf.get("results",[]))
+    all_stocks  = []
+    for pf in portfolios:
+        all_results.extend(pf.get("results",[]))
+        all_stocks.extend(pf.get("stocks",[]))
 
-    total_invested = sum(r.get("invested",0) for r in all_results) or sum(sum(s.get("invested",0) for s in pf.get("stocks",[])) for pf in portfolios)
-    total_mkt      = sum(r.get("market_value",0) for r in all_results)
-    total_pnl      = total_mkt - total_invested if total_mkt > 0 else sum(sum(s.get("pnl_broker",0) for s in pf.get("stocks",[])) for pf in portfolios)
+    total_invested = sum(s.get("invested",0) for s in all_stocks) or sum(r.get("invested",0) for r in all_results)
+    # Prefer live market_value already on each stock (set at import time
+    # and refreshed by Analyze) so these numbers are correct immediately
+    # after upload, not only after a full manual Analyze run.
+    stocks_mkt_sum = sum(s.get("market_value",0) for s in all_stocks)
+    total_mkt      = stocks_mkt_sum if stocks_mkt_sum > 0 else sum(r.get("market_value",0) for r in all_results)
+    total_pnl      = total_mkt - total_invested if total_mkt > 0 else sum(s.get("pnl_broker",0) for s in all_stocks)
     total_pnl_pct  = (total_pnl / total_invested * 100) if total_invested > 0 else 0
     total_stocks   = sum(len(pf.get("stocks",[])) for pf in portfolios)
     buy_count      = sum(1 for r in all_results if r.get("decision")=="BUY")
@@ -2400,7 +2442,7 @@ def render_stock_summary_block(portfolios):
     c1,c2,c3,c4,c5 = st.columns(5)
     tiles = [
         ("TOTAL INVESTED", fmt_inr(total_invested), f"{total_stocks} stocks", "blue"),
-        ("CURRENT VALUE",  fmt_inr(total_mkt) if total_mkt>0 else fmt_inr(total_invested), f"{len(portfolios)} portfolios", "cyan"),
+        ("CURRENT VALUE",  fmt_inr(total_mkt) if total_mkt>0 else "—", f"{len(portfolios)} portfolios", "cyan"),
         ("TOTAL P&L",      (f"+{fmt_inr(total_pnl)}" if total_pnl>=0 else fmt_inr(total_pnl)), f"{total_pnl_pct:+.1f}% overall", "green" if total_pnl>=0 else "red"),
         ("BUY SIGNALS",    str(buy_count), f"{buy_count}/{total_stocks} stocks", "green"),
         ("DIV INCOME (3Y)", fmt_inr(total_div_rcvd) if total_div_rcvd>0 else "—", "total dividends rcvd", "amber"),
@@ -2548,6 +2590,12 @@ def render_portfolio_tab(pf, pf_idx):
         total_inv     = sum(s.get("invested",0) for s in stocks)
         total_pnl_broker = sum(s.get("pnl_broker",0) for s in stocks)
         pnl_col = "#00c87a" if total_pnl_broker >= 0 else "#ff3b5c"
+        holder = pf.get("holder", "").strip()
+        st.markdown(f"""<div style="padding:0 0 6px;display:flex;align-items:center;gap:8px;">
+            <div style="width:9px;height:9px;border-radius:50%;background:{color};"></div>
+            <div style="font-size:15px;font-weight:700;color:var(--text-primary);">{pf.get('name','')}</div>
+            {f'<div style="font-size:11px;color:var(--text-muted);">· {holder}</div>' if holder else ''}
+        </div>""", unsafe_allow_html=True)
         st.markdown(f"""<div style="padding:0 0 12px;font-family:'DM Mono',monospace;font-size:11px;color:var(--text-secondary);">
             {len(stocks)} STOCKS &nbsp;·&nbsp; INVESTED: <span style="color:var(--text-primary);">₹{total_inv:,.0f}</span>
             &nbsp;·&nbsp; P&L: <span style="color:{pnl_col};">₹{total_pnl_broker:+,.0f}</span>
@@ -2622,11 +2670,15 @@ def render_portfolio_tab(pf, pf_idx):
                             if err:
                                 st.error(f"❌ {err}")
                             else:
-                                pf["stocks"].extend(parsed or [])
+                                new_stocks = parsed or []
+                                if new_stocks:
+                                    with st.spinner(f"Fetching live prices for {len(new_stocks)} stocks…"):
+                                        new_stocks = refresh_current_values(new_stocks)
+                                pf["stocks"].extend(new_stocks)
                                 pf["results"] = []; pf["analyzed"] = False
                                 save_portfolios()
                                 st.session_state[f"show_import_stocks_{pf_idx}"] = False
-                                st.success(f"✅ Imported {len(parsed or [])} stocks into '{pf['name']}'.")
+                                st.success(f"✅ Imported {len(new_stocks)} stocks into '{pf['name']}'.")
                                 if warn: st.info(f"ℹ️ {warn}")
                                 st.rerun()
                         except Exception as e:
@@ -2666,12 +2718,14 @@ def render_portfolio_tab(pf, pf_idx):
     for s in stocks:
         pnl_b = s.get("pnl_broker",0)
         pc = "#00c87a" if pnl_b >= 0 else "#ff3b5c"
+        cur_val = s.get("market_value", 0)
         rows_html += f"""<tr>
             <td><div style="font-weight:600;">{s['name'][:25]}</div></td>
             <td class="mono" style="color:var(--text-muted);">{s['ticker']}</td>
             <td class="mono">{s['qty']}</td>
             <td class="mono">₹{s['buy_price']:,.1f}</td>
             <td class="mono">₹{s.get('invested',0):,.0f}</td>
+            <td class="mono">{f"₹{cur_val:,.0f}" if cur_val else "—"}</td>
             <td class="mono" style="color:{pc};">₹{pnl_b:+,.0f}</td>
         </tr>"""
 
@@ -2683,7 +2737,7 @@ def render_portfolio_tab(pf, pf_idx):
             </div>
         </div>
         <table class="t-table"><thead><tr>
-            <th>Company</th><th>Ticker</th><th>Qty</th><th>Avg Price</th><th>Invested</th><th>Broker P&L</th>
+            <th>Company</th><th>Ticker</th><th>Qty</th><th>Avg Price</th><th>Invested</th><th>Current Value</th><th>Broker P&L</th>
         </tr></thead><tbody>{rows_html}</tbody></table>
     </div>""", unsafe_allow_html=True)
 
@@ -2716,10 +2770,21 @@ def render_portfolio_tab(pf, pf_idx):
             status.empty()
             pf["results"]  = analyzed
             pf["analyzed"] = True
+            # Sync live prices back into the raw holdings list so the
+            # Current Value column reflects real data, not the stale
+            # import-time placeholder.
+            by_ticker = {r.get("ticker"): r for r in analyzed if not r.get("error")}
+            for s in pf["stocks"]:
+                r = by_ticker.get(s.get("ticker"))
+                if r:
+                    s["market_value"] = round(r.get("market_value", 0), 2)
+                    s["ltp"] = round(r.get("cmp", 0), 2)
+                    s["pnl_broker"] = round(r.get("market_value", 0) - s.get("invested", 0), 2)
             pf_inv = sum(r.get("invested", 0) for r in analyzed)
             pf_mkt = sum(r.get("market_value", 0) for r in analyzed)
             if pf_inv > 0 and pf_mkt > 0:
                 pf["pnl_pct"] = (pf_mkt - pf_inv) / pf_inv * 100
+            save_portfolios()
             st.rerun()
     else:
         render_portfolio_results(results, pf, pf_idx)
@@ -3614,9 +3679,16 @@ def page_dashboard():
 
     # ── Row 1: Key numbers ────────────────────────────────────
     all_results   = [r for pf in portfolios for r in pf.get("results", [])]
-    total_invested= sum(r.get("invested",0) for r in all_results) or \
-                    sum(s.get("invested",0) for pf in portfolios for s in pf.get("stocks",[]))
-    total_mkt     = sum(r.get("market_value",0) for r in all_results) or total_invested
+    all_stocks    = [s for pf in portfolios for s in pf.get("stocks", [])]
+    total_invested= sum(s.get("invested",0) for s in all_stocks) or \
+                    sum(r.get("invested",0) for r in all_results)
+    # Prefer each stock's own live market_value (populated at import time
+    # and kept fresh by Analyze) over post-analysis results — this way
+    # Current Value/Net Worth is accurate immediately after upload, not
+    # only after a manual Analyze run.
+    stocks_mkt_sum = sum(s.get("market_value",0) for s in all_stocks)
+    total_mkt     = stocks_mkt_sum if stocks_mkt_sum > 0 else \
+                    (sum(r.get("market_value",0) for r in all_results) or total_invested)
     total_pnl     = total_mkt - total_invested
     total_stocks  = sum(len(pf.get("stocks",[])) for pf in portfolios)
     pnl_pct       = (total_pnl/total_invested*100) if total_invested>0 else 0
@@ -3742,14 +3814,19 @@ def page_dashboard():
                 </div>
             </div>""", unsafe_allow_html=True)
 
-    # ── Backup & Restore — the safety net for browser-only storage ──
+    # ── Backup & Restore reminder — always visible, not hidden in a collapsed expander ──
     st.markdown('<br>', unsafe_allow_html=True)
-    with st.expander("💾 Backup & Restore — your data lives only in this browser"):
+    st.markdown(
+        '<div style="font-size:11px;color:var(--text-muted);padding:6px 2px;">'
+        '💾 Tip: click <b>Download Backup</b> below before rebooting the app or pushing new code — '
+        'that\'s when data can be lost, not during normal use.</div>',
+        unsafe_allow_html=True
+    )
+    with st.expander("💾 Backup & Restore"):
         st.markdown("""<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
-            Your portfolios, wealth profile, and mutual fund data are saved only in <b>this browser</b> —
-            nothing is shared with other visitors, and nothing is sent to a server. That also means
-            clearing your browser data, switching browsers, or using a different device will lose it
-            unless you've downloaded a backup below.
+            Your portfolios, wealth profile, and mutual fund data are saved on the server, tied to this
+            browser only — other visitors can't see it. However, an app reboot or redeploy can wipe this
+            storage, so download a backup before either of those, or any time you want extra safety.
         </div>""", unsafe_allow_html=True)
 
         bcol1, bcol2 = st.columns(2)

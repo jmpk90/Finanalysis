@@ -3262,7 +3262,7 @@ def page_dashboard():
     from datetime import datetime as _dt
 
     st.markdown(f"""<div style="padding:0 0 20px;">
-        <div style="font-size:22px;font-weight:600;color:var(--text-primary);">Dashboard</div>
+        <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:24px;font-weight:600;color:var(--text-primary);">Dashboard</div>
         <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
             {_dt.now().strftime('%d %B %Y')} · Complete financial snapshot</div>
     </div>""", unsafe_allow_html=True)
@@ -3325,7 +3325,7 @@ def page_dashboard():
         <div>
             <div style="font-size:13px;color:var(--text-muted);font-weight:500;
                 letter-spacing:0.5px;margin-bottom:4px;">TOTAL FAMILY NET WORTH</div>
-            <div style="font-size:36px;font-weight:700;color:var(--text-primary);">
+            <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:36px;font-weight:700;color:var(--text-primary);">
                 {fmt_inr(family_nw)}</div>
             <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
                 Stocks + MF + Wealth − Loans</div>
@@ -3333,18 +3333,18 @@ def page_dashboard():
         <div style="display:flex;gap:24px;flex-wrap:wrap;">
             <div style="text-align:center;">
                 <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px;">STOCKS</div>
-                <div style="font-size:18px;font-weight:600;color:var(--text-primary);">{fmt_inr(total_mkt)}</div>
-                <div style="font-size:11px;color:{pnl_color};">{total_pnl:+,.0f}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:18px;font-weight:600;color:var(--text-primary);">{fmt_inr(total_mkt)}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:11px;color:{pnl_color};">{total_pnl:+,.0f}</div>
             </div>
             <div style="text-align:center;">
                 <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px;">MF</div>
-                <div style="font-size:18px;font-weight:600;color:var(--text-primary);">{fmt_inr(mf_value)}</div>
-                <div style="font-size:11px;color:var(--accent-blue);">SIP {fmt_inr(mf_sip)}/mo</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:18px;font-weight:600;color:var(--text-primary);">{fmt_inr(mf_value)}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:11px;color:var(--accent-blue);">SIP {fmt_inr(mf_sip)}/mo</div>
             </div>
             <div style="text-align:center;">
                 <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px;">WEALTH</div>
-                <div style="font-size:18px;font-weight:600;color:var(--text-primary);">{fmt_inr(wealth_total)}</div>
-                <div style="font-size:11px;color:var(--accent-red);">Loans {fmt_inr(loan_total)}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:18px;font-weight:600;color:var(--text-primary);">{fmt_inr(wealth_total)}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:11px;color:var(--accent-red);">Loans {fmt_inr(loan_total)}</div>
             </div>
         </div>
     </div>""", unsafe_allow_html=True)
@@ -3362,7 +3362,7 @@ def page_dashboard():
                 border-top:3px solid {ac};border-radius:8px;padding:14px 16px;margin-bottom:16px;">
                 <div style="font-size:10px;font-weight:600;letter-spacing:1px;
                     color:var(--text-muted);margin-bottom:6px;">{lbl}</div>
-                <div style="font-size:20px;font-weight:700;color:{ac};margin-bottom:3px;">{val}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:20px;font-weight:700;color:{ac};margin-bottom:3px;">{val}</div>
                 <div style="font-size:11px;color:var(--text-muted);">{sub}</div>
             </div>""", unsafe_allow_html=True)
 
@@ -3406,7 +3406,7 @@ def page_dashboard():
 def page_portfolio():
     """Stocks & Mutual Funds — both in sub-tabs."""
     st.markdown("""<div style="padding:0 0 16px;">
-        <div style="font-size:22px;font-weight:600;color:var(--text-primary);">Portfolio</div>
+        <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:22px;font-weight:600;color:var(--text-primary);">Portfolio</div>
         <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
             Stocks · Mutual Funds · Analysis · Compare</div>
     </div>""", unsafe_allow_html=True)
@@ -3452,7 +3452,7 @@ def page_portfolio():
 def page_wealth():
     """All wealth / investment data from the Finance module — minus Budget."""
     st.markdown("""<div style="padding:0 0 16px;">
-        <div style="font-size:22px;font-weight:600;color:var(--text-primary);">Wealth</div>
+        <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:22px;font-weight:600;color:var(--text-primary);">Wealth</div>
         <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
             Assets · EPF/NPS · Gold · Property · FDs · Loans · Goals · Projections</div>
     </div>""", unsafe_allow_html=True)
@@ -3525,7 +3525,7 @@ def page_wealth():
 def page_budget_tab():
     """Monthly budget & family financial dashboard."""
     st.markdown("""<div style="padding:0 0 16px;">
-        <div style="font-size:22px;font-weight:600;color:var(--text-primary);">Budget</div>
+        <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:22px;font-weight:600;color:var(--text-primary);">Budget</div>
         <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
             Monthly budgets · Family dashboard · Income & expense tracking</div>
     </div>""", unsafe_allow_html=True)

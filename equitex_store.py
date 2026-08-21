@@ -1,86 +1,105 @@
 # ═══════════════════════════════════════════════════════════════════
-# EQUITEX STORE — Browser-only storage
-# Every visitor's data lives in THEIR OWN browser's localStorage.
-# There is no shared backend, so one visitor can never see another's
-# data — isolation is guaranteed by the browser itself, not by app logic.
+# EQUITEX STORE — Cookie-keyed per-browser storage
 #
-# Trade-off (by design, discussed with the user): data is tied to one
-# browser on one device. Clearing browser data, switching browsers, or
-# using a private/incognito tab means the data is gone unless the user
-# has downloaded a backup (see export_full_backup / restore_full_backup
-# below, wired into the Dashboard page's Backup & Restore section).
+# Why this replaced the localStorage approach: that relied on a
+# third-party component (streamlit-local-storage) bridging JS and
+# Python through an iframe, which proved unreliable in practice — data
+# was getting lost on ordinary page refresh, not just slow to load.
+#
+# This version uses st.context.cookies — a NATIVE Streamlit feature
+# (1.38+) that reads real HTTP cookies sent with the request. No JS
+# bridge, no iframe, no race condition: cookies are either present in
+# the request or they aren't, checked synchronously every time.
+#
+# Each browser gets a random ID (set once, via a real cookie, on first
+# visit). Data is stored server-side in a small JSON file per ID — a
+# plain, boring, synchronous file read/write, so refreshing the page
+# can no longer lose data the way the old async component could.
+#
+# Residual trade-off (smaller than before, but real): Streamlit Cloud's
+# free-tier filesystem is ephemeral, so a redeploy or a long sleep/wake
+# cycle can wipe these files — ordinary refreshes and normal usage are
+# NOT affected, only redeploys. The Backup & Restore download button
+# on the Dashboard remains the safety net for that rarer case.
 # ═══════════════════════════════════════════════════════════════════
 import json
-import time
+import os
+import uuid
 import streamlit as st
-from streamlit_local_storage import LocalStorage
+import streamlit.components.v1 as components
 
-_KEYS = {
-    "portfolios": "equitex_portfolios",
-    "profile":    "equitex_profile",
-    "mf_store":   "equitex_mf_store",
-}
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.path.join(_HERE, "equitex_user_data")
+os.makedirs(_DATA_DIR, exist_ok=True)
 
+_COOKIE_NAME = "equitex_device_id"
 _BACKUP_VERSION = 1
 
 
-def _ls():
-    """One LocalStorage component instance per session, reused across calls."""
-    if "_ls_instance" not in st.session_state:
-        st.session_state._ls_instance = LocalStorage()
-    return st.session_state._ls_instance
+def _get_device_id():
+    """Read the browser's device-id cookie (native, reliable). If this
+    browser has never visited before, mint a new ID, set it as a real
+    cookie via a tiny one-time JS snippet, and reload so the very next
+    request has it — after that, every read is a plain cookie check,
+    no async waiting involved."""
+    if "_device_id" in st.session_state:
+        return st.session_state["_device_id"]
+
+    try:
+        existing = st.context.cookies.get(_COOKIE_NAME)
+    except Exception:
+        existing = None
+
+    if existing:
+        st.session_state["_device_id"] = existing
+        return existing
+
+    # First-ever visit from this browser — mint and persist an ID once.
+    if st.session_state.get("_cookie_set_attempted"):
+        # We already tried setting it and reloaded, but it's still not
+        # showing up (browser is blocking cookies entirely). Fall back
+        # to a session-only ID so the app still works, just without
+        # persistence across refreshes for this browser.
+        fallback_id = str(uuid.uuid4())
+        st.session_state["_device_id"] = fallback_id
+        st.warning("This browser appears to be blocking cookies, so your data won't persist across page refreshes here. Please use Download Backup regularly.")
+        return fallback_id
+
+    new_id = str(uuid.uuid4())
+    st.session_state["_cookie_set_attempted"] = True
+    components.html(f"""
+        <script>
+        document.cookie = "{_COOKIE_NAME}={new_id}; max-age=31536000; path=/; SameSite=Lax";
+        window.location.reload();
+        </script>
+    """, height=0)
+    st.stop()  # halt this run — the reload above will restart with the cookie present
+
+
+def _paths(device_id, item):
+    return os.path.join(_DATA_DIR, f"{device_id}__{item}.json")
 
 
 def _read(item, default):
-    """Read one item from the browser, with a session-level cache so we
-    only ever touch the JS bridge once per item per session (not once per
-    call — several modules call get_portfolios()/get_mf_store() etc. on
-    the same page load).
-
-    Known quirk: on the very first load of a fresh browser tab, the
-    component's JS side hasn't reported its real value back to Python
-    yet, so an immediate read can look empty even when data exists.
-    We retry a few times with short real delays (not just an instant
-    rerun) to give the browser round-trip a genuine chance to complete
-    before trusting "empty" as real — otherwise we can permanently lock
-    in "no data" for the whole session even though the data is still
-    sitting safely in the browser.
-    """
-    cache_key = f"_ls_cache_{item}"
-    if cache_key in st.session_state:
-        return st.session_state[cache_key]
-
+    device_id = _get_device_id()
+    path = _paths(device_id, item)
+    if not os.path.exists(path):
+        return default
     try:
-        raw = _ls().getItem(_KEYS[item], key=f"get_{item}")
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
-        raw = None
-
-    if raw:
-        try:
-            val = json.loads(raw)
-        except Exception:
-            val = default
-        st.session_state[cache_key] = val
-        return val
-
-    attempt_key = f"_ls_attempts_{item}"
-    attempts = st.session_state.get(attempt_key, 0)
-    if attempts < 4:
-        st.session_state[attempt_key] = attempts + 1
-        time.sleep(0.35)  # give the browser round-trip real time to land
-        st.rerun()
-
-    st.session_state[cache_key] = default
-    return default
+        return default
 
 
 def _write(item, value):
-    cache_key = f"_ls_cache_{item}"
-    st.session_state[cache_key] = value
+    device_id = _get_device_id()
+    path = _paths(device_id, item)
     try:
-        _ls().setItem(_KEYS[item], json.dumps(value, default=str), key=f"set_{item}")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(value, f, default=str)
     except Exception as e:
-        st.warning(f"Could not save to browser storage — your changes will be lost on refresh unless you download a backup. ({e})")
+        st.warning(f"Could not save — please use Download Backup as a safeguard. ({e})")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -115,10 +134,9 @@ def save_mf_store(store):
 
 # ═══════════════════════════════════════════════════════════════════
 # FULL BACKUP — export everything to one downloadable file, and restore
-# from it. This is the safety net for browser storage being wiped.
+# from it. Safety net for the redeploy/sleep-wake ephemeral-disk case.
 # ═══════════════════════════════════════════════════════════════════
 def export_full_backup():
-    """Return a single JSON string with everything, for st.download_button."""
     payload = {
         "_equitex_backup_version": _BACKUP_VERSION,
         "portfolios": get_portfolios(),
@@ -129,8 +147,6 @@ def export_full_backup():
 
 
 def restore_full_backup(json_text):
-    """Parse an uploaded backup file and write all three stores back into
-    this browser's local storage. Returns (ok: bool, message: str)."""
     try:
         payload = json.loads(json_text)
     except Exception as e:

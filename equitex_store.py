@@ -11,6 +11,7 @@
 # below, wired into the Dashboard page's Backup & Restore section).
 # ═══════════════════════════════════════════════════════════════════
 import json
+import time
 import streamlit as st
 from streamlit_local_storage import LocalStorage
 
@@ -38,10 +39,12 @@ def _read(item, default):
 
     Known quirk: on the very first load of a fresh browser tab, the
     component's JS side hasn't reported its real value back to Python
-    yet, so the first read can look empty even when data exists. We give
-    it exactly one extra rerun to resolve before trusting "empty" as
-    genuine — this can cause a brief flicker on first load, which is the
-    trade-off for not needing any server-side backend at all.
+    yet, so an immediate read can look empty even when data exists.
+    We retry a few times with short real delays (not just an instant
+    rerun) to give the browser round-trip a genuine chance to complete
+    before trusting "empty" as real — otherwise we can permanently lock
+    in "no data" for the whole session even though the data is still
+    sitting safely in the browser.
     """
     cache_key = f"_ls_cache_{item}"
     if cache_key in st.session_state:
@@ -60,10 +63,12 @@ def _read(item, default):
         st.session_state[cache_key] = val
         return val
 
-    boot_key = f"_ls_booted_{item}"
-    if not st.session_state.get(boot_key):
-        st.session_state[boot_key] = True
-        st.rerun()  # give the component one more pass to report its real value
+    attempt_key = f"_ls_attempts_{item}"
+    attempts = st.session_state.get(attempt_key, 0)
+    if attempts < 4:
+        st.session_state[attempt_key] = attempts + 1
+        time.sleep(0.35)  # give the browser round-trip real time to land
+        st.rerun()
 
     st.session_state[cache_key] = default
     return default

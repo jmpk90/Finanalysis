@@ -621,6 +621,12 @@ def render_budget_section():
 # ═══════════════════════════════════════════════════════════════════
 def render_assets_section():
     sec_header("🏦 Assets & Net Worth", "ALL ASSETS — TAGGED BY OWNER")
+    st.markdown(
+        '<div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">'
+        '💡 Items tagged <b>AUTO</b> below (EPF, NPS, Gold, FDs, Real Estate) come from your wealth data — '
+        'edit those directly in the <b>✏️ Edit Holdings</b> tab, not here.</div>',
+        unsafe_allow_html=True
+    )
     p = get_profile()
     self_name   = p.get("self_name","Self")
     spouse_name = p.get("spouse_name","Spouse") if p.get("include_spouse") else None
@@ -816,6 +822,246 @@ def render_assets_section():
                     font=dict(size=11, color="#e2e8f0", family="DM Mono"), showarrow=False)]
             )
             st.plotly_chart(fig, width='stretch')
+
+
+def render_wealth_holdings_section():
+    """Direct edit forms for EPF, NPS, Gold, FDs, and Real Estate — the
+    categories that previously could ONLY be set via a one-time Excel
+    Template import, with no way to update them afterward."""
+    sec_header("✏️ Edit Wealth Holdings", "EPF · NPS · GOLD · FIXED DEPOSITS · REAL ESTATE")
+    p = get_profile()
+    self_name   = p.get("self_name","Self")
+    spouse_name = p.get("spouse_name","Spouse") if p.get("include_spouse") else None
+    has_spouse  = bool(p.get("include_spouse"))
+    OWNER_BASE  = {self_name: "self"}
+    if has_spouse: OWNER_BASE[spouse_name] = "spouse"
+    OWNER_BASE["Joint"] = "joint"
+
+    htabs = st.tabs(["📋 EPF & NPS", "🪙 Gold", "🏛 Fixed Deposits", "🏠 Real Estate"])
+
+    # ══════════════════════ EPF & NPS ══════════════════════
+    with htabs[0]:
+        st.markdown("**EPF**")
+        c1,c2,c3 = st.columns(3)
+        with c1: epf_bal = st.number_input("EPF Balance (₹)", 0, 100000000, int(_flt(p.get("epf_balance",0))), 10000, key="wh_epf_bal")
+        with c2: epf_mo  = st.number_input("Your Monthly Contribution (₹)", 0, 1000000, int(_flt(p.get("epf_monthly",0))), 500, key="wh_epf_mo")
+        with c3: epf_emp = st.number_input("Employer Monthly Contribution (₹)", 0, 1000000, int(_flt(p.get("epf_employer",0))), 500, key="wh_epf_emp")
+        sp_epf = p.get("spouse_epf",0)
+        if has_spouse:
+            sp_epf = st.number_input(f"{spouse_name}'s EPF Balance (₹)", 0, 100000000, int(_flt(p.get("spouse_epf",0))), 10000, key="wh_sp_epf")
+
+        st.markdown("**NPS**")
+        n1,n2 = st.columns(2)
+        with n1: nps_bal = st.number_input("NPS Balance (₹)", 0, 100000000, int(_flt(p.get("nps_balance",0))), 10000, key="wh_nps_bal")
+        with n2: nps_mo  = st.number_input("Monthly NPS Contribution (₹)", 0, 1000000, int(_flt(p.get("nps_monthly",0))), 500, key="wh_nps_mo")
+        sp_nps = p.get("spouse_nps",0)
+        if has_spouse:
+            sp_nps = st.number_input(f"{spouse_name}'s NPS Balance (₹)", 0, 100000000, int(_flt(p.get("spouse_nps",0))), 10000, key="wh_sp_nps")
+
+        if st.button("💾 Save EPF & NPS", key="wh_save_epf_nps", type="primary"):
+            p.update({"epf_balance":epf_bal, "epf_monthly":epf_mo, "epf_employer":epf_emp, "spouse_epf":sp_epf,
+                      "nps_balance":nps_bal, "nps_monthly":nps_mo, "spouse_nps":sp_nps})
+            st.session_state.fa_profile = p
+            fa_save()
+            st.success("✅ EPF & NPS updated")
+            st.rerun()
+
+    # ══════════════════════ GOLD ══════════════════════
+    with htabs[1]:
+        gold_list = p.get("gold_list", [])
+        with st.expander("➕ Add Gold Holding", expanded=not gold_list):
+            gc1,gc2,gc3 = st.columns(3)
+            with gc1: g_type = st.selectbox("Type", ["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"], key="wh_g_type")
+            with gc2: g_grams = st.number_input("Grams", 0.0, 100000.0, 0.0, 1.0, key="wh_g_grams")
+            with gc3: g_rate = st.number_input("Rate per gram (₹)", 0, 100000, 7500, 100, key="wh_g_rate")
+            gc4,gc5 = st.columns(2)
+            with gc4: g_inv = st.number_input("Amount Invested (₹)", 0, 100000000, 0, 1000, key="wh_g_inv")
+            with gc5: g_owner_lbl = st.selectbox("Belongs to", list(OWNER_BASE.keys()), key="wh_g_owner")
+            if st.button("Add Gold", key="wh_add_gold", type="primary"):
+                if g_grams > 0:
+                    gold_list.append({"type":g_type, "grams":g_grams, "rate":g_rate, "invested":g_inv,
+                                       "owner":OWNER_BASE[g_owner_lbl], "sgb_units":0, "sgb_issue_price":0})
+                    p["gold_list"] = gold_list
+                    st.session_state.fa_profile = p; fa_save()
+                    st.success("✅ Added"); st.rerun()
+
+        for i, g in enumerate(gold_list):
+            ek = f"wh_edit_gold_{i}"
+            gval = _flt(g.get("grams",0)) * max(1,_flt(g.get("rate",7500)))
+            if st.session_state.get(ek):
+                with st.container():
+                    st.markdown('<div style="background:var(--bg-card);border:1px solid var(--accent-gold);border-radius:6px;padding:12px 14px;margin-bottom:4px;">', unsafe_allow_html=True)
+                    ec1,ec2,ec3 = st.columns(3)
+                    with ec1: e_type = st.selectbox("Type", ["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"],
+                                                     index=["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"].index(g.get("type","Physical Jewellery")) if g.get("type") in ["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"] else 0,
+                                                     key=f"wh_ge_type_{i}")
+                    with ec2: e_grams = st.number_input("Grams", 0.0, 100000.0, float(g.get("grams",0)), 1.0, key=f"wh_ge_grams_{i}")
+                    with ec3: e_rate = st.number_input("Rate per gram (₹)", 0, 100000, int(_flt(g.get("rate",7500))), 100, key=f"wh_ge_rate_{i}")
+                    ec4,ec5 = st.columns(2)
+                    with ec4: e_inv = st.number_input("Amount Invested (₹)", 0, 100000000, int(_flt(g.get("invested",0))), 1000, key=f"wh_ge_inv_{i}")
+                    with ec5:
+                        cur_lbl = {v:k for k,v in OWNER_BASE.items()}.get(g.get("owner","self"), self_name)
+                        e_owner_lbl = st.selectbox("Belongs to", list(OWNER_BASE.keys()),
+                                                    index=list(OWNER_BASE.keys()).index(cur_lbl) if cur_lbl in OWNER_BASE else 0,
+                                                    key=f"wh_ge_owner_{i}")
+                    sv1,sv2,_ = st.columns([1,1,4])
+                    with sv1:
+                        if st.button("💾 Save", key=f"wh_gsave_{i}", type="primary"):
+                            gold_list[i] = {"type":e_type,"grams":e_grams,"rate":e_rate,"invested":e_inv,
+                                             "owner":OWNER_BASE[e_owner_lbl],"sgb_units":g.get("sgb_units",0),"sgb_issue_price":g.get("sgb_issue_price",0)}
+                            p["gold_list"] = gold_list
+                            st.session_state.fa_profile = p; fa_save()
+                            st.session_state[ek] = False
+                            st.success("✅ Updated"); st.rerun()
+                    with sv2:
+                        if st.button("✕ Cancel", key=f"wh_gcancel_{i}"):
+                            st.session_state[ek] = False; st.rerun()
+                    st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                r1, r2, r3 = st.columns([6,1,1])
+                with r1:
+                    st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
+                        background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
+                        <div style="flex:2;font-size:13px;">{g.get('type','Gold')} — {g.get('grams',0)}g</div>
+                        <div style="flex:1;text-align:right;font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(gval)}</div>
+                    </div>""", unsafe_allow_html=True)
+                with r2:
+                    if st.button("✏️", key=f"wh_gedit_{i}", help="Edit"):
+                        st.session_state[ek] = True; st.rerun()
+                with r3:
+                    if st.button("🗑", key=f"wh_gdel_{i}", help="Delete"):
+                        gold_list.pop(i); p["gold_list"]=gold_list
+                        st.session_state.fa_profile=p; fa_save(); st.rerun()
+
+    # ══════════════════════ FIXED DEPOSITS ══════════════════════
+    with htabs[2]:
+        fd_list = p.get("fd_list", [])
+        with st.expander("➕ Add Fixed Deposit", expanded=not fd_list):
+            fc1,fc2,fc3,fc4 = st.columns(4)
+            with fc1: f_bank = st.text_input("Bank", key="wh_f_bank")
+            with fc2: f_amt  = st.number_input("Amount (₹)", 0, 100000000, 0, 10000, key="wh_f_amt")
+            with fc3: f_rate = st.number_input("Interest Rate (%)", 0.0, 20.0, 7.0, 0.1, key="wh_f_rate")
+            with fc4: f_mo   = st.number_input("Tenure (months)", 0, 360, 12, 1, key="wh_f_mo")
+            if st.button("Add FD", key="wh_add_fd", type="primary"):
+                if f_amt > 0:
+                    fd_list.append({"bank":f_bank or "Bank", "type":"FD", "amount":f_amt, "rate":f_rate, "months":f_mo})
+                    p["fd_list"] = fd_list
+                    st.session_state.fa_profile = p; fa_save()
+                    st.success("✅ Added"); st.rerun()
+
+        for i, f in enumerate(fd_list):
+            ek = f"wh_edit_fd_{i}"
+            if st.session_state.get(ek):
+                with st.container():
+                    st.markdown('<div style="background:var(--bg-card);border:1px solid var(--accent-gold);border-radius:6px;padding:12px 14px;margin-bottom:4px;">', unsafe_allow_html=True)
+                    ec1,ec2,ec3,ec4 = st.columns(4)
+                    with ec1: e_bank = st.text_input("Bank", value=f.get("bank",""), key=f"wh_fe_bank_{i}")
+                    with ec2: e_amt  = st.number_input("Amount (₹)", 0, 100000000, int(_flt(f.get("amount",0))), 10000, key=f"wh_fe_amt_{i}")
+                    with ec3: e_rate = st.number_input("Interest Rate (%)", 0.0, 20.0, float(f.get("rate",7.0)), 0.1, key=f"wh_fe_rate_{i}")
+                    with ec4: e_mo   = st.number_input("Tenure (months)", 0, 360, int(f.get("months",12)), 1, key=f"wh_fe_mo_{i}")
+                    sv1,sv2,_ = st.columns([1,1,4])
+                    with sv1:
+                        if st.button("💾 Save", key=f"wh_fsave_{i}", type="primary"):
+                            fd_list[i] = {"bank":e_bank,"type":"FD","amount":e_amt,"rate":e_rate,"months":e_mo}
+                            p["fd_list"] = fd_list
+                            st.session_state.fa_profile = p; fa_save()
+                            st.session_state[ek] = False
+                            st.success("✅ Updated"); st.rerun()
+                    with sv2:
+                        if st.button("✕ Cancel", key=f"wh_fcancel_{i}"):
+                            st.session_state[ek] = False; st.rerun()
+                    st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                r1, r2, r3 = st.columns([6,1,1])
+                with r1:
+                    st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
+                        background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
+                        <div style="flex:2;font-size:13px;">FD — {f.get('bank','Bank')} ({f.get('rate',0)}%)</div>
+                        <div style="flex:1;text-align:right;font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(f.get('amount',0))}</div>
+                    </div>""", unsafe_allow_html=True)
+                with r2:
+                    if st.button("✏️", key=f"wh_fedit_{i}", help="Edit"):
+                        st.session_state[ek] = True; st.rerun()
+                with r3:
+                    if st.button("🗑", key=f"wh_fdel_{i}", help="Delete"):
+                        fd_list.pop(i); p["fd_list"]=fd_list
+                        st.session_state.fa_profile=p; fa_save(); st.rerun()
+
+    # ══════════════════════ REAL ESTATE ══════════════════════
+    with htabs[3]:
+        re_list = p.get("re_list", [])
+        with st.expander("➕ Add Property", expanded=not re_list):
+            rc1,rc2 = st.columns(2)
+            with rc1: r_name = st.text_input("Property Name", placeholder="e.g. Home, Plot in Pune", key="wh_r_name")
+            with rc2:
+                RE_TYPES = ["Residential","Commercial","Plot/Land","Other"]
+                r_type = st.selectbox("Type", RE_TYPES, key="wh_r_type")
+            rc3,rc4,rc5 = st.columns(3)
+            with rc3: r_buy  = st.number_input("Purchase Price (₹)", 0, 1000000000, 0, 10000, key="wh_r_buy")
+            with rc4: r_cur  = st.number_input("Current Value (₹)", 0, 1000000000, 0, 10000, key="wh_r_cur")
+            with rc5: r_rent = st.number_input("Monthly Rent Income (₹)", 0, 1000000, 0, 500, key="wh_r_rent")
+            rc6,rc7 = st.columns(2)
+            with rc6: r_loan = st.number_input("Outstanding Loan (₹)", 0, 1000000000, 0, 10000, key="wh_r_loan")
+            with rc7: r_owner_lbl = st.selectbox("Belongs to", list(OWNER_BASE.keys()), key="wh_r_owner")
+            if st.button("Add Property", key="wh_add_re", type="primary"):
+                if r_name and r_cur > 0:
+                    re_list.append({"name":r_name, "type":r_type, "purchased":r_buy, "current":r_cur,
+                                     "rent":r_rent, "loan":r_loan, "owner":OWNER_BASE[r_owner_lbl]})
+                    p["re_list"] = re_list
+                    st.session_state.fa_profile = p; fa_save()
+                    st.success("✅ Added"); st.rerun()
+
+        for i, r in enumerate(re_list):
+            ek = f"wh_edit_re_{i}"
+            if st.session_state.get(ek):
+                with st.container():
+                    st.markdown('<div style="background:var(--bg-card);border:1px solid var(--accent-gold);border-radius:6px;padding:12px 14px;margin-bottom:4px;">', unsafe_allow_html=True)
+                    ec1,ec2 = st.columns(2)
+                    with ec1: e_name = st.text_input("Property Name", value=r.get("name",""), key=f"wh_re_name_{i}")
+                    with ec2:
+                        RE_TYPES = ["Residential","Commercial","Plot/Land","Other"]
+                        e_type = st.selectbox("Type", RE_TYPES,
+                                               index=RE_TYPES.index(r.get("type","Residential")) if r.get("type") in RE_TYPES else 0,
+                                               key=f"wh_re_type_{i}")
+                    ec3,ec4,ec5 = st.columns(3)
+                    with ec3: e_buy  = st.number_input("Purchase Price (₹)", 0, 1000000000, int(_flt(r.get("purchased",0))), 10000, key=f"wh_re_buy_{i}")
+                    with ec4: e_cur  = st.number_input("Current Value (₹)", 0, 1000000000, int(_flt(r.get("current",0))), 10000, key=f"wh_re_cur_{i}")
+                    with ec5: e_rent = st.number_input("Monthly Rent Income (₹)", 0, 1000000, int(_flt(r.get("rent",0))), 500, key=f"wh_re_rent_{i}")
+                    ec6,ec7 = st.columns(2)
+                    with ec6: e_loan = st.number_input("Outstanding Loan (₹)", 0, 1000000000, int(_flt(r.get("loan",0))), 10000, key=f"wh_re_loan_{i}")
+                    with ec7:
+                        cur_lbl = {v:k for k,v in OWNER_BASE.items()}.get(r.get("owner","joint"), "Joint")
+                        e_owner_lbl = st.selectbox("Belongs to", list(OWNER_BASE.keys()),
+                                                    index=list(OWNER_BASE.keys()).index(cur_lbl) if cur_lbl in OWNER_BASE else 0,
+                                                    key=f"wh_re_owner_{i}")
+                    sv1,sv2,_ = st.columns([1,1,4])
+                    with sv1:
+                        if st.button("💾 Save", key=f"wh_resave_{i}", type="primary"):
+                            re_list[i] = {"name":e_name,"type":e_type,"purchased":e_buy,"current":e_cur,
+                                          "rent":e_rent,"loan":e_loan,"owner":OWNER_BASE[e_owner_lbl]}
+                            p["re_list"] = re_list
+                            st.session_state.fa_profile = p; fa_save()
+                            st.session_state[ek] = False
+                            st.success("✅ Updated"); st.rerun()
+                    with sv2:
+                        if st.button("✕ Cancel", key=f"wh_recancel_{i}"):
+                            st.session_state[ek] = False; st.rerun()
+                    st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                r1c, r2c, r3c = st.columns([6,1,1])
+                with r1c:
+                    st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
+                        background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
+                        <div style="flex:2;font-size:13px;">{r.get('name','Property')} ({r.get('type','Residential')})</div>
+                        <div style="flex:1;text-align:right;font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(r.get('current',0))}</div>
+                    </div>""", unsafe_allow_html=True)
+                with r2c:
+                    if st.button("✏️", key=f"wh_redit_{i}", help="Edit"):
+                        st.session_state[ek] = True; st.rerun()
+                with r3c:
+                    if st.button("🗑", key=f"wh_rdel_{i}", help="Delete"):
+                        re_list.pop(i); p["re_list"]=re_list
+                        st.session_state.fa_profile=p; fa_save(); st.rerun()
 
 
 def _build_legacy_assets(p):

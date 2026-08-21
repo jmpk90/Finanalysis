@@ -715,7 +715,47 @@ def render_assets_section():
         oc    = OWNER_COLORS.get(owner, OWNER_COLORS["self"])
         owner_label = {"self": self_name, "spouse": spouse_name or "Spouse", "joint":"Joint"}.get(owner, owner)
         is_legacy = a.get("_legacy", False)
-        c_row, c_del = st.columns([10,1])
+        real_idx = i - len(legacy_assets)  # index into `assets` (user-added only)
+        edit_key = f"editing_asset_{real_idx}"
+
+        if not is_legacy and st.session_state.get(edit_key):
+            # ── Inline edit form, pre-filled with current values ──
+            with st.container():
+                st.markdown('<div style="background:var(--bg-card);border:1px solid var(--accent-gold);border-radius:6px;padding:12px 14px;margin-bottom:4px;">', unsafe_allow_html=True)
+                ec1,ec2,ec3 = st.columns(3)
+                with ec1: e_name = st.text_input("Asset name", value=a.get("name",""), key=f"e_name_{real_idx}")
+                with ec2: e_type = st.selectbox("Type", ASSET_TYPES, index=ASSET_TYPES.index(a.get("type", ASSET_TYPES[0])) if a.get("type") in ASSET_TYPES else 0, key=f"e_type_{real_idx}")
+                with ec3: e_val  = st.number_input("Current Value (₹)", 0, 1000000000, int(val), 10000, key=f"e_val_{real_idx}")
+                ec4,ec5,ec6 = st.columns(3)
+                with ec4: e_inv  = st.number_input("Amount Invested (₹)", 0, 1000000000, int(inv), 10000, key=f"e_inv_{real_idx}")
+                with ec5: e_mo   = st.number_input("Monthly Addition (₹)", 0, 1000000, int(_flt(a.get("monthly",0))), 500, key=f"e_mo_{real_idx}")
+                with ec6:
+                    OWNER_OPTS_E = {self_name: "self"}
+                    if has_spouse: OWNER_OPTS_E[spouse_name] = "spouse"
+                    OWNER_OPTS_E["Joint"] = "joint"
+                    owner_labels = list(OWNER_OPTS_E.keys())
+                    cur_lbl = {"self": self_name, "spouse": spouse_name, "joint": "Joint"}.get(owner, self_name)
+                    e_owner_lbl = st.selectbox("Belongs to", owner_labels,
+                                                index=owner_labels.index(cur_lbl) if cur_lbl in owner_labels else 0,
+                                                key=f"e_owner_{real_idx}")
+                sc1, sc2, _ = st.columns([1,1,4])
+                with sc1:
+                    if st.button("💾 Save", key=f"save_asset_{real_idx}", type="primary"):
+                        assets[real_idx] = {"name": e_name, "type": e_type, "value": e_val,
+                                             "invested": e_inv, "monthly": e_mo,
+                                             "owner": OWNER_OPTS_E[e_owner_lbl]}
+                        save_assets(assets)
+                        st.session_state[edit_key] = False
+                        st.success(f"✅ Updated {e_name}")
+                        st.rerun()
+                with sc2:
+                    if st.button("✕ Cancel", key=f"cancel_asset_{real_idx}"):
+                        st.session_state[edit_key] = False
+                        st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
+            continue
+
+        c_row, c_edit, c_del = st.columns([10,1,1])
         with c_row:
             gain_str = (f'<span style="color:{gc};font-size:11px;">{fmt(gain)}</span>' if inv > 0 else '<span style="color:var(--text-muted);font-size:11px;">—</span>')
             st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
@@ -733,10 +773,17 @@ def render_assets_section():
                 <div style="width:110px;text-align:right;font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(val)}</div>
                 <div style="width:80px;text-align:right;">{gain_str}</div>
             </div>""", unsafe_allow_html=True)
+        with c_edit:
+            if not is_legacy:
+                if st.button("✏️", key=f"edit_asset_{real_idx}", help="Edit"):
+                    st.session_state[edit_key] = True
+                    st.rerun()
+            else:
+                st.markdown('<div style="height:36px;"></div>', unsafe_allow_html=True)
         with c_del:
             if not is_legacy:
                 if st.button("🗑", key=f"del_asset_{i}", help="Delete"):
-                    assets.pop(i - len(legacy_assets))
+                    assets.pop(real_idx)
                     save_assets(assets)
                     st.rerun()
             else:

@@ -125,6 +125,15 @@ def fmt(n):
 
 def fmt_inr(n): return fmt(n)
 
+def mask_pan(pan):
+    """Show only the last 4 characters of a PAN — the rest is masked
+    since PAN is a sensitive personal identifier, not something that
+    needs to be fully visible on screen for day-to-day use."""
+    pan = str(pan or "").strip()
+    if len(pan) < 5:
+        return pan if pan else "N/A"
+    return "•" * (len(pan) - 4) + pan[-4:]
+
 def color_ret(v):
     return "#3ecf8e" if v >= 0 else "#e05252"
 
@@ -683,7 +692,11 @@ def _regex_parse_cas(text: str) -> dict:
 
 # ── Convert parsed CAS → fund dicts ──────────────────────────
 def cas_to_funds(parsed: dict) -> list:
-    """Convert parsed data to fund objects with live NAVs."""
+    """Convert parsed data to fund objects — and immediately look up each
+    fund's LIVE NAV by ISIN/name (via mfapi.in/AMFI), since the NAV in the
+    imported Excel/PDF is only as fresh as the statement date. This
+    replaces the old behavior of deferring NAV refresh to a manual button
+    click after import."""
     funds=[]; source=parsed.get("source","CAS")
     for folio in parsed.get("folios",[]):
         amc=folio.get("amc","")
@@ -693,20 +706,43 @@ def cas_to_funds(parsed: dict) -> list:
             units=float(s.get("units",0) or 0); nav=float(s.get("nav",0) or 0)
             value=float(s.get("value",0) or 0); cost=float(s.get("cost",0) or 0)
             if not nm or (units==0 and value==0 and cost==0): continue
-            # AMFI code — try ISIN lookup (fast, no heavy search during import)
+
+            # ── Resolve AMFI scheme code: direct code → ISIN search → name search ──
             sc=None
             if amfi and str(amfi).isdigit(): sc=int(amfi)
-            # Skip network search during import — NAVs refreshed via Overview button
-            lnav=nav; ldate=s.get("valuation_date","")
+            if not sc and isin:
+                try:
+                    res = search_funds(isin)
+                    if res: sc = res[0]["schemeCode"]
+                except Exception:
+                    pass
+            if not sc and nm:
+                try:
+                    res = search_funds(nm[:30])
+                    if res: sc = res[0]["schemeCode"]
+                except Exception:
+                    pass
+
+            # ── Fetch live NAV now (falls back to the CAS/Excel NAV if the lookup fails) ──
+            lnav, ldate = nav, s.get("valuation_date","")
+            if sc:
+                try:
+                    nd = fetch_latest_nav(sc)
+                    if nd:
+                        lnav, ldate = nd["nav"], nd["date"]
+                except Exception:
+                    pass
+
             lval = units*lnav if units>0 and lnav>0 else (value if value>0 else 0.0)
             inv  = cost if cost>0 else (value if value>0 else round(units*nav,2))
+            pnl  = round(lval - inv, 2)
             aid  = s.get("_account_id") or faid
             obj={
                 "name":nm[:80],"scheme_code":sc,"isin":isin,"amfi":amfi,
                 "amc":s.get("amc","") or amc,"folio":s.get("folio","") or folio.get("folio",""),
                 "category":"Other","units":units,"avg_nav":round(inv/units,4) if units>0 else nav,
                 "invested":inv,"current_value":lval,"latest_nav":lnav,"nav_date":ldate,
-                "cas_nav":nav,"cas_value":value,"sip":0,"since":"","since_date":"","source":source,
+                "pnl":pnl,"cas_nav":nav,"cas_value":value,"sip":0,"since":"","since_date":"","source":source,
             }
             if aid:
                 obj["_import_account_id"]   = aid
@@ -723,7 +759,8 @@ def refresh_navs(funds: list) -> list:
                 f["latest_nav"] = nd["nav"]
                 f["nav_date"]   = nd["date"]
                 if f.get("units", 0) > 0:
-                    f["current_value"] = f["units"] * nd["nav"]
+                    f["current_value"] = round(f["units"] * nd["nav"], 2)
+                    f["pnl"] = round(f["current_value"] - f.get("invested", 0), 2)
     return funds
 
 
@@ -853,6 +890,7 @@ def page_mf_portfolio():
                                         f["latest_nav"]    = nd["nav"]
                                         f["nav_date"]      = nd["date"]
                                         f["current_value"] = round(f.get("units",0) * nd["nav"], 2)
+                                        f["pnl"]           = round(f["current_value"] - f.get("invested", 0), 2)
                                         updated += 1
                         store["last_refresh"] = datetime.datetime.now().strftime("%d %b %Y %H:%M")
                         save_store(store)
@@ -1065,7 +1103,7 @@ def page_mf_portfolio():
                           <div class="mf-hdr">{acc.get("relation","")}</div>
                           <div style="font-size:14px;font-weight:700;color:var(--text-primary);">{acc.get("name","")}</div>
                           <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
-                            PAN: {acc.get("pan","N/A")} · {len(af)} funds</div>
+                            PAN: {mask_pan(acc.get("pan"))} · {len(af)} funds</div>
                           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;">
                             <div><div class="mf-hdr">INVESTED</div>
                               <div style="font-size:13px;font-weight:600;color:var(--accent-blue);">{fmt(ai)}</div></div>
@@ -1099,7 +1137,7 @@ def page_mf_portfolio():
                           color:var(--accent-blue);border:1px solid var(--border);">{src}</span>
                       </div>
                       <div style="font-size:11px;color:var(--text-muted);">
-                        PAN: {acc.get("pan","N/A")} · {len(af)} funds · Inv: {fmt(ai)} · Cur: {fmt(ac2)}
+                        PAN: {mask_pan(acc.get("pan"))} · {len(af)} funds · Inv: {fmt(ai)} · Cur: {fmt(ac2)}
                         {f" · Period: {stmt}" if stmt else ""}
                       </div></div>""", unsafe_allow_html=True)
                 with ca2:
@@ -1151,35 +1189,61 @@ def page_mf_portfolio():
 
     # ═════════════════════════════ IMPORT CAS ═════════════════
     with t3:
-        st.info("🔖 mf_module version: **v8-final** · correct file loaded")
-
         # ── Show post-import confirmation (survives rerun) ──────
         if st.session_state.get("_import_ok"):
             msg = st.session_state.pop("_import_ok")
             st.success(msg)
 
         # ── Step 1: Upload & Parse ───────────────────────────────
-        st.markdown("### Step 1 — Upload Excel")
-        cas_file = st.file_uploader(
-            "Upload MF Portfolio Excel (.xlsx)",
-            type=["xlsx","xls"], key="cas_excel_up"
-        )
+        st.markdown("### Step 1 — Upload your CAS statement")
+        st.markdown('<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Your real CDSL/NSDL Consolidated Account Statement is a <b>PDF</b> — that\'s what you\'ll usually want. Excel is also supported if you\'ve exported your holdings that way instead.</div>', unsafe_allow_html=True)
 
-        if cas_file:
-            file_bytes = cas_file.read()
-            st.info(f"📊 **{cas_file.name}** ready")
+        cas_format = st.radio("Format", ["📄 PDF (CDSL/NSDL CAS)", "📊 Excel"],
+                               horizontal=True, key="cas_format_choice", label_visibility="collapsed")
 
-            if st.button("📥 Parse Excel", key="parse_btn", type="primary"):
-                with st.spinner("Reading Excel..."):
-                    parsed = parse_mf_excel(file_bytes)
-                if not parsed.get("ok"):
-                    st.error("Parse failed: " + " | ".join(parsed.get("errors",[])))
-                else:
-                    st.session_state["_cas_parsed"] = parsed
-                    st.session_state["_cas_is_excel"] = True
-                    nf = len(parsed.get("folios",[]))
-                    ns = sum(len(x["schemes"]) for x in parsed.get("folios",[]))
-                    st.success(f"✅ Parsed: {nf} folio(s), {ns} fund(s) found")
+        if cas_format.startswith("📄"):
+            cas_file = st.file_uploader(
+                "Upload CAS PDF", type=["pdf"], key="cas_pdf_up",
+                help="The monthly/annual CAS PDF emailed by CDSL (cdslindia.com) or NSDL — usually password-protected."
+            )
+            cas_password = st.text_input(
+                "PDF Password (if protected)", type="password", key="cas_pdf_pw",
+                help="Usually your PAN in uppercase, or PAN+DOB depending on the issuer — check the email that sent you the CAS."
+            )
+            if cas_file:
+                file_bytes = cas_file.read()
+                st.info(f"📄 **{cas_file.name}** ready")
+                if st.button("📥 Parse PDF", key="parse_pdf_btn", type="primary"):
+                    with st.spinner("Reading CAS PDF — this can take a few seconds…"):
+                        parsed = parse_cas_pdf(file_bytes, cas_password)
+                    if not parsed.get("ok"):
+                        st.error("Parse failed: " + " | ".join(parsed.get("errors", ["Unknown error"])))
+                        st.markdown('<div style="font-size:11px;color:var(--text-muted);">Common fixes: double-check the password, or make sure this is a genuine CDSL/NSDL CAS PDF (not a screenshot/scan).</div>', unsafe_allow_html=True)
+                    else:
+                        st.session_state["_cas_parsed"] = parsed
+                        st.session_state["_cas_is_excel"] = False
+                        nf = len(parsed.get("folios", []))
+                        ns = sum(len(x["schemes"]) for x in parsed.get("folios", []))
+                        st.success(f"✅ Parsed: {nf} folio(s), {ns} fund(s) found")
+        else:
+            cas_file = st.file_uploader(
+                "Upload MF Portfolio Excel (.xlsx)",
+                type=["xlsx","xls"], key="cas_excel_up"
+            )
+            if cas_file:
+                file_bytes = cas_file.read()
+                st.info(f"📊 **{cas_file.name}** ready")
+                if st.button("📥 Parse Excel", key="parse_btn", type="primary"):
+                    with st.spinner("Reading Excel..."):
+                        parsed = parse_mf_excel(file_bytes)
+                    if not parsed.get("ok"):
+                        st.error("Parse failed: " + " | ".join(parsed.get("errors",[])))
+                    else:
+                        st.session_state["_cas_parsed"] = parsed
+                        st.session_state["_cas_is_excel"] = True
+                        nf = len(parsed.get("folios",[]))
+                        ns = sum(len(x["schemes"]) for x in parsed.get("folios",[]))
+                        st.success(f"✅ Parsed: {nf} folio(s), {ns} fund(s) found")
 
         # ── Step 2: Import ───────────────────────────────────────
         if st.session_state.get("_cas_parsed"):
@@ -1265,7 +1329,7 @@ def page_mf_portfolio():
                             sync_to_finance(store)
                             st.session_state.pop("_cas_parsed", None)
                             st.session_state.pop("_cas_is_excel", None)
-                            st.session_state["_import_ok"] = f"✅ {total_added} fund(s) imported for {list(accounts.values())[-1].get('name','')}"
+                            st.session_state["_import_ok"] = f"✅ {total_added} fund(s) imported for {list(accounts.values())[-1].get('name','')} — live NAVs fetched automatically (not the statement's old NAV)."
                             st.rerun()
 
                     except Exception as _e:

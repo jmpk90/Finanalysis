@@ -1,26 +1,23 @@
 # ═══════════════════════════════════════════════════════════════════
-# EQUITEX STORE — Cookie-keyed per-browser storage
+# EQUITEX STORE — Cookie/query-param-keyed per-browser storage
 #
-# Why this replaced the localStorage approach: that relied on a
-# third-party component (streamlit-local-storage) bridging JS and
-# Python through an iframe, which proved unreliable in practice — data
-# was getting lost on ordinary page refresh, not just slow to load.
+# History: first version used a third-party localStorage component
+# (unreliable — lost data on refresh). Second version used a native
+# cookie set via a JS-triggered page reload (caused a blank-page
+# failure when the reload didn't complete cleanly). This version
+# never halts or reloads the page — it determines a per-browser ID
+# synchronously in one pass (cookie, then URL ?uid= param, then a
+# freshly minted one written straight into the URL) and keeps
+# rendering normally either way.
 #
-# This version uses st.context.cookies — a NATIVE Streamlit feature
-# (1.38+) that reads real HTTP cookies sent with the request. No JS
-# bridge, no iframe, no race condition: cookies are either present in
-# the request or they aren't, checked synchronously every time.
+# Data is stored server-side in a small JSON file per device ID — a
+# plain, boring, synchronous file read/write.
 #
-# Each browser gets a random ID (set once, via a real cookie, on first
-# visit). Data is stored server-side in a small JSON file per ID — a
-# plain, boring, synchronous file read/write, so refreshing the page
-# can no longer lose data the way the old async component could.
-#
-# Residual trade-off (smaller than before, but real): Streamlit Cloud's
-# free-tier filesystem is ephemeral, so a redeploy or a long sleep/wake
-# cycle can wipe these files — ordinary refreshes and normal usage are
-# NOT affected, only redeploys. The Backup & Restore download button
-# on the Dashboard remains the safety net for that rarer case.
+# Residual trade-off: Streamlit Cloud's free-tier filesystem is
+# ephemeral, so a redeploy or long sleep/wake cycle can wipe these
+# files — ordinary refreshes and normal usage are NOT affected, only
+# redeploys. The Backup & Restore download button on the Dashboard
+# remains the safety net for that rarer case.
 # ═══════════════════════════════════════════════════════════════════
 import json
 import os
@@ -37,43 +34,66 @@ _BACKUP_VERSION = 1
 
 
 def _get_device_id():
-    """Read the browser's device-id cookie (native, reliable). If this
-    browser has never visited before, mint a new ID, set it as a real
-    cookie via a tiny one-time JS snippet, and reload so the very next
-    request has it — after that, every read is a plain cookie check,
-    no async waiting involved."""
+    """Determine a stable per-browser ID, without ever halting or
+    reloading the page (that reload-based approach caused a blank-page
+    failure — too fragile). Priority:
+      1. Existing cookie (native st.context.cookies — reliable, no JS).
+      2. Existing ?uid= query param (also native, zero JS needed).
+      3. Freshly minted ID — written into the URL's query param
+         immediately (so this exact visit is already persistent via the
+         URL) and also attempted as a cookie for future bare-URL visits,
+         but WITHOUT blocking or reloading — the app keeps rendering
+         normally in this same run either way.
+    """
     if "_device_id" in st.session_state:
         return st.session_state["_device_id"]
 
     try:
-        existing = st.context.cookies.get(_COOKIE_NAME)
+        existing_cookie = st.context.cookies.get(_COOKIE_NAME)
     except Exception:
-        existing = None
+        existing_cookie = None
 
-    if existing:
-        st.session_state["_device_id"] = existing
-        return existing
+    if existing_cookie:
+        st.session_state["_device_id"] = existing_cookie
+        return existing_cookie
 
-    # First-ever visit from this browser — mint and persist an ID once.
-    if st.session_state.get("_cookie_set_attempted"):
-        # We already tried setting it and reloaded, but it's still not
-        # showing up (browser is blocking cookies entirely). Fall back
-        # to a session-only ID so the app still works, just without
-        # persistence across refreshes for this browser.
-        fallback_id = str(uuid.uuid4())
-        st.session_state["_device_id"] = fallback_id
-        st.warning("This browser appears to be blocking cookies, so your data won't persist across page refreshes here. Please use Download Backup regularly.")
-        return fallback_id
+    try:
+        existing_qp = st.query_params.get("uid")
+    except Exception:
+        existing_qp = None
+
+    if existing_qp:
+        st.session_state["_device_id"] = existing_qp
+        # try to also set a cookie so future bare-URL visits still work
+        _try_set_cookie(existing_qp)
+        return existing_qp
 
     new_id = str(uuid.uuid4())
-    st.session_state["_cookie_set_attempted"] = True
-    components.html(f"""
-        <script>
-        document.cookie = "{_COOKIE_NAME}={new_id}; max-age=31536000; path=/; SameSite=Lax";
-        window.location.reload();
-        </script>
-    """, height=0)
-    st.stop()  # halt this run — the reload above will restart with the cookie present
+    st.session_state["_device_id"] = new_id
+    try:
+        st.query_params["uid"] = new_id
+    except Exception:
+        pass
+    _try_set_cookie(new_id)
+    return new_id
+
+
+def _try_set_cookie(device_id):
+    """Fire-and-forget cookie set — no reload, no st.stop(). If it works,
+    great (future bare-URL visits pick it up). If it silently fails,
+    the URL's ?uid= param (already set) still carries the ID, so nothing
+    breaks either way."""
+    if st.session_state.get(f"_cookie_tried_{device_id}"):
+        return
+    st.session_state[f"_cookie_tried_{device_id}"] = True
+    try:
+        components.html(f"""
+            <script>
+            document.cookie = "{_COOKIE_NAME}={device_id}; max-age=31536000; path=/; SameSite=Lax";
+            </script>
+        """, height=0)
+    except Exception:
+        pass
 
 
 def _paths(device_id, item):

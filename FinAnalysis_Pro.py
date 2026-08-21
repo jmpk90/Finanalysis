@@ -3853,6 +3853,42 @@ def page_dashboard():
                 else:
                     st.error(msg)
 
+    # ── Security: rotate ID if you ever shared your app link ──
+    with st.expander("🔒 Security — I accidentally shared my app link"):
+        st.markdown("""<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+            An earlier version of this app could leak your data if you shared your app's URL with
+            someone (it sometimes appeared with a <code>?uid=...</code> part). If you've ever sent
+            your app link to anyone, click below — it moves your data to a brand-new private ID that
+            was never exposed to them, cutting off their access immediately.
+        </div>""", unsafe_allow_html=True)
+        if st.button("🔄 Rotate my ID now (fixes a shared link)", key="rotate_id_btn", type="primary"):
+            from equitex_store import rotate_device_id
+            rotate_device_id()
+            for k in ["_restored"]:
+                st.session_state[k] = False
+            st.success("✅ Done — your data now lives under a fresh, private ID. The old link no longer has access.")
+            st.rerun()
+
+    # ── Danger zone: delete everything ─────────────────────────
+    with st.expander("🗑️ Delete Profile — Full Reset"):
+        st.markdown("""<div style="font-size:12px;color:var(--accent-red);margin-bottom:10px;">
+            ⚠️ This permanently deletes <b>everything</b> — all portfolios, your wealth profile,
+            and all mutual fund data. There is no undo except restoring from a backup file, if you
+            have one. Please download a backup first if you're not sure.
+        </div>""", unsafe_allow_html=True)
+        confirm_del = st.checkbox("I understand this deletes everything and cannot be undone", key="confirm_delete_all")
+        if st.button("🗑️ Delete Everything", key="delete_all_btn", type="secondary", disabled=not confirm_del):
+            from equitex_store import delete_all_data
+            delete_all_data()
+            st.session_state.portfolios   = []
+            st.session_state.fa_profile   = {}
+            st.session_state.fa_loaded    = False
+            st.session_state.mf_store     = {}
+            st.session_state._restored    = False
+            st.session_state.confirm_delete_all = False
+            st.success("✅ Everything deleted. Starting fresh.")
+            st.rerun()
+
 
 # ═══════════════════════════════════════════════════════════════════
 # PAGE: PORTFOLIO — Stocks + MF in one place
@@ -3915,7 +3951,7 @@ def page_wealth():
         fa_load, get_profile, render_profile_section,
         render_assets_section, render_liabilities_section,
         render_goals_section, render_projections_section,
-        render_template_import_inner, fa_save
+        render_template_import_inner, render_wealth_holdings_section, fa_save
     )
     import json as _json
 
@@ -3924,53 +3960,34 @@ def page_wealth():
 
     p = get_profile()
 
-    # ── Header / backup bar ───────────────────────────────────
-    hc1, hc2 = st.columns([3, 2])
-    with hc1:
-        if p.get("self_name"):
-            st.markdown(f"""<div style="background:var(--bg-card);border:1px solid var(--border);
-                border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:12px;">
-                <span style="color:var(--accent-green);font-weight:600;">✅ {p.get('self_name')}</span>
-                {"  +  <span style='color:var(--accent-gold);font-weight:600;'>" + p.get('spouse_name','') + "</span>" if p.get('include_spouse') and p.get('spouse_name') else ""}
-                <span style="color:var(--text-muted);margin-left:8px;">profile loaded</span>
-            </div>""", unsafe_allow_html=True)
-    with hc2:
-        if p.get("self_name"):
-            import datetime as _dt2
-            profile_json = _json.dumps(p, indent=2, default=str)
-            fname = f"equitex_{p.get('self_name','profile').replace(' ','_')}_{_dt2.date.today()}.json"
-            st.download_button("⬇ Backup profile", data=profile_json,
-                file_name=fname, mime="application/json", key="wealth_dl_backup")
+    # ── Header ─────────────────────────────────────────────────
+    if p.get("self_name"):
+        st.markdown(f"""<div style="background:var(--bg-card);border:1px solid var(--border);
+            border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:12px;">
+            <span style="color:var(--accent-green);font-weight:600;">✅ {p.get('self_name')}</span>
+            {"  +  <span style='color:var(--accent-gold);font-weight:600;'>" + p.get('spouse_name','') + "</span>" if p.get('include_spouse') and p.get('spouse_name') else ""}
+            <span style="color:var(--text-muted);margin-left:8px;">profile loaded — full backup available on the Dashboard</span>
+        </div>""", unsafe_allow_html=True)
 
-    # ── Import / restore ──────────────────────────────────────
-    with st.expander("📂 Import / Restore profile", expanded=not p.get("self_name")):
-        rt1, rt2 = st.tabs(["🔄 Restore JSON", "📥 Import Excel template"])
-        with rt1:
-            bk = st.file_uploader("Upload JSON backup", type=["json"],
-                key="wealth_backup_upload", label_visibility="collapsed")
-            if bk:
-                try:
-                    restored = _json.loads(bk.read().decode("utf-8"))
-                    if isinstance(restored, dict) and restored.get("self_name"):
-                        st.session_state.fa_profile = restored
-                        st.session_state.fa_loaded  = True
-                        fa_save()
-                        st.success(f"✅ Restored {restored.get('self_name')}")
-                        st.rerun()
-                    else:
-                        st.error("Doesn't look like an EQUITEX backup.")
-                except Exception as e:
-                    st.error(f"Could not read backup: {e}")
-        with rt2:
-            render_template_import_inner()
+    # ── Import from Excel template ─────────────────────────────
+    with st.expander("📥 Import from Excel Template", expanded=not p.get("self_name")):
+        st.markdown(
+            '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">'
+            'For a full backup/restore covering portfolios, wealth profile, and mutual funds together, '
+            'use the <b>💾 Backup & Restore</b> section on the Dashboard instead — that\'s the one place '
+            'that saves and restores everything at once.</div>',
+            unsafe_allow_html=True
+        )
+        render_template_import_inner()
 
     # ── Sub-tabs ──────────────────────────────────────────────
-    wtabs = st.tabs(["👤 Profile", "🏦 Assets", "💳 Loans", "🎯 Goals", "📈 Projections"])
+    wtabs = st.tabs(["👤 Profile", "🏦 Assets", "✏️ Edit Holdings", "💳 Loans", "🎯 Goals", "📈 Projections"])
     with wtabs[0]: render_profile_section()
     with wtabs[1]: render_assets_section()
-    with wtabs[2]: render_liabilities_section()
-    with wtabs[3]: render_goals_section()
-    with wtabs[4]: render_projections_section()
+    with wtabs[2]: render_wealth_holdings_section()
+    with wtabs[3]: render_liabilities_section()
+    with wtabs[4]: render_goals_section()
+    with wtabs[5]: render_projections_section()
 
 
 # ═══════════════════════════════════════════════════════════════════

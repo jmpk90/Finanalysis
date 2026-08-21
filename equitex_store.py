@@ -34,16 +34,18 @@ _BACKUP_VERSION = 1
 
 
 def _get_device_id():
-    """Determine a stable per-browser ID, without ever halting or
-    reloading the page (that reload-based approach caused a blank-page
-    failure — too fragile). Priority:
-      1. Existing cookie (native st.context.cookies — reliable, no JS).
-      2. Existing ?uid= query param (also native, zero JS needed).
-      3. Freshly minted ID — written into the URL's query param
-         immediately (so this exact visit is already persistent via the
-         URL) and also attempted as a cookie for future bare-URL visits,
-         but WITHOUT blocking or reloading — the app keeps rendering
-         normally in this same run either way.
+    """Determine a stable per-browser ID — cookie ONLY, never the URL.
+
+    A previous version also accepted a ?uid= query param as a fallback.
+    That was a real security bug: URLs get copy-pasted and shared, and
+    anyone who received a link with ?uid= in it inherited full access to
+    that person's data. Cookies don't have this problem — they aren't
+    included when you share a link, only when the browser that set them
+    revisits.
+
+    If cookies are blocked in this browser, we fall back to a
+    session-only random ID (works for this visit, not persisted, never
+    exposed in the URL) rather than ever using something shareable.
     """
     if "_device_id" in st.session_state:
         return st.session_state["_device_id"]
@@ -57,32 +59,16 @@ def _get_device_id():
         st.session_state["_device_id"] = existing_cookie
         return existing_cookie
 
-    try:
-        existing_qp = st.query_params.get("uid")
-    except Exception:
-        existing_qp = None
-
-    if existing_qp:
-        st.session_state["_device_id"] = existing_qp
-        # try to also set a cookie so future bare-URL visits still work
-        _try_set_cookie(existing_qp)
-        return existing_qp
-
     new_id = str(uuid.uuid4())
     st.session_state["_device_id"] = new_id
-    try:
-        st.query_params["uid"] = new_id
-    except Exception:
-        pass
     _try_set_cookie(new_id)
     return new_id
 
 
 def _try_set_cookie(device_id):
-    """Fire-and-forget cookie set — no reload, no st.stop(). If it works,
-    great (future bare-URL visits pick it up). If it silently fails,
-    the URL's ?uid= param (already set) still carries the ID, so nothing
-    breaks either way."""
+    """Fire-and-forget cookie set — no reload, no st.stop(). If the
+    browser blocks it, this session just won't persist across refresh —
+    safer than falling back to anything shareable."""
     if st.session_state.get(f"_cookie_tried_{device_id}"):
         return
     st.session_state[f"_cookie_tried_{device_id}"] = True
@@ -94,6 +80,50 @@ def _try_set_cookie(device_id):
         """, height=0)
     except Exception:
         pass
+
+
+def rotate_device_id():
+    """Move this browser to a brand-new random ID, migrating its current
+    data along with it. Use this if you ever accidentally shared your
+    app URL (from before this fix) — anyone who opened that old link may
+    have gotten a cookie for your OLD id planted on their own browser,
+    which would keep working even after this fix ships. Rotating gives
+    you a fresh id that was never exposed to them, and abandons the old
+    one's data files."""
+    old_id = st.session_state.get("_device_id")
+    new_id = str(uuid.uuid4())
+
+    if old_id:
+        for item in ("portfolios", "profile", "mf_store"):
+            old_path = _paths(old_id, item)
+            if os.path.exists(old_path):
+                try:
+                    with open(old_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    with open(_paths(new_id, item), "w", encoding="utf-8") as f:
+                        json.dump(data, f, default=str)
+                    os.remove(old_path)  # abandon the old (potentially leaked) copy
+                except Exception:
+                    pass
+
+    st.session_state["_device_id"] = new_id
+    st.session_state[f"_cookie_tried_{new_id}"] = False
+    _try_set_cookie(new_id)
+    return new_id
+
+
+def delete_all_data():
+    """Permanently delete everything for this browser's device ID —
+    portfolios, wealth profile, and mutual fund data. Irreversible unless
+    the user has a backup file to restore from."""
+    device_id = _get_device_id()
+    for item in ("portfolios", "profile", "mf_store"):
+        path = _paths(device_id, item)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
 
 def _paths(device_id, item):

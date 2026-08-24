@@ -142,6 +142,90 @@ def color_ret(v):
 # ══════════════════════════════════════════════════════════════
 
 
+def parse_generic_mf_holdings(file_bytes: bytes) -> dict:
+    """Parser for a real-world flat MF holdings export — one row per fund,
+    columns like Scheme Name / ISIN / Folio No. / Closing Bal (Units) /
+    NAV / Cumulative Amount Invested / Valuation. No 'Account ID' column
+    (unlike the bespoke EQUITEX template), so everything goes into one
+    default account."""
+    try:
+        import openpyxl, io as _io, re as _re
+        wb = openpyxl.load_workbook(_io.BytesIO(file_bytes), data_only=True)
+
+        ws, header_row_idx, col = None, None, {}
+        for sheet in wb.sheetnames:
+            w = wb[sheet]
+            for i, row in enumerate(w.iter_rows(min_row=1, max_row=10, values_only=True), start=1):
+                cells = [str(c).strip().lower() if c else "" for c in row]
+                if any("scheme name" in c or "fund name" in c for c in cells) and \
+                   any("closing bal" in c or "closing units" in c for c in cells):
+                    ws, header_row_idx = w, i
+                    for idx, h in enumerate(row):
+                        hl = _re.sub(r'\s+', ' ', str(h or '').lower().replace("(", "").replace(")", ""))
+                        if "scheme name" in hl or "fund name" in hl: col["name"] = idx
+                        elif "isin" in hl: col["isin"] = idx
+                        elif "folio" in hl: col["folio"] = idx
+                        elif "closing bal" in hl or "closing units" in hl: col["units"] = idx
+                        elif hl.startswith("nav"): col["nav"] = idx
+                        elif "cumulative amount" in hl or "invested" in hl or "cost" in hl: col["cost"] = idx
+                        elif "valuation" in hl: col["value"] = idx
+                    break
+            if ws:
+                break
+
+        if not ws:
+            return {"ok": False, "errors": ["Couldn't find Scheme Name / Closing Bal columns in any sheet."]}
+
+        schemes = []
+        for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
+            name = row[col["name"]] if "name" in col else None
+            if not name or str(name).strip().lower() in ("", "grand total", "total"):
+                continue
+            units = float(row[col["units"]] or 0) if "units" in col else 0.0
+            if units <= 0:
+                continue
+            schemes.append({
+                "scheme": str(name)[:80],
+                "isin":   str(row[col["isin"]]).strip() if "isin" in col and row[col["isin"]] else "",
+                "folio":  str(row[col["folio"]]).strip() if "folio" in col and row[col["folio"]] else "",
+                "amc": "", "amfi": "",
+                "units": round(units, 3),
+                "nav":   float(row[col["nav"]] or 0) if "nav" in col else 0.0,
+                "cost":  float(row[col["cost"]] or 0) if "cost" in col else 0.0,
+                "value": float(row[col["value"]] or 0) if "value" in col else 0.0,
+                "valuation_date": "",
+            })
+
+        if not schemes:
+            return {"ok": False, "errors": ["Found the header row, but no fund rows below it."]}
+
+        return {
+            "ok": True, "source": "generic_excel", "file_type": "EXCEL",
+            "investor": {"name": "", "pan": "", "email": "", "mobile": ""},
+            "statement_period": {"from": "", "to": ""},
+            "folios": [{
+                "folio": "IMPORTED", "amc": "Multiple", "pan": "",
+                "_account_id": "SELF_IMPORT", "_account_name": "My Holdings", "_relation": "Self",
+                "schemes": schemes,
+            }],
+        }
+    except Exception as e:
+        return {"ok": False, "errors": [f"Could not parse Excel: {str(e)[:200]}"]}
+
+
+def parse_mf_excel_router(file_bytes: bytes) -> dict:
+    """Try the bespoke EQUITEX template first (Account ID-based), then
+    fall back to a real-world flat holdings export (Scheme Name-based)."""
+    result = parse_mf_excel(file_bytes)
+    if result.get("ok"):
+        return result
+    fallback = parse_generic_mf_holdings(file_bytes)
+    if fallback.get("ok"):
+        return fallback
+    # Neither matched — surface both error sets so the user knows what was tried
+    return {"ok": False, "errors": (result.get("errors", [])) + (fallback.get("errors", []))}
+
+
 def parse_mf_excel(file_bytes: bytes) -> dict:
     """Parse EQUITEX PRO Excel template — reads Portfolio Summary sheet."""
     try:
@@ -1235,7 +1319,7 @@ def page_mf_portfolio():
                 st.info(f"📊 **{cas_file.name}** ready")
                 if st.button("📥 Parse Excel", key="parse_btn", type="primary"):
                     with st.spinner("Reading Excel..."):
-                        parsed = parse_mf_excel(file_bytes)
+                        parsed = parse_mf_excel_router(file_bytes)
                     if not parsed.get("ok"):
                         st.error("Parse failed: " + " | ".join(parsed.get("errors",[])))
                     else:

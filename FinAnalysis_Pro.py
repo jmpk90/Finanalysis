@@ -827,11 +827,21 @@ def pct(val):
 
 def fmt_cr(val):
     if val is None: return "N/A"
+    if _values_hidden(): return "••••••"
     if abs(val) >= 1e7: return f"₹{val/1e7:.1f}Cr"
     if abs(val) >= 1e5: return f"₹{val/1e5:.1f}L"
     return f"₹{val:.0f}"
 
+def _values_hidden():
+    try:
+        import streamlit as _st
+        return _st.session_state.get("values_hidden", True)
+    except Exception:
+        return False
+
 def fmt_inr(val):
+    if _values_hidden():
+        return "••••••"
     if abs(val) >= 1e7: return f"₹{val/1e7:.1f}Cr"
     if abs(val) >= 1e5: return f"₹{val/1e5:.1f}L"
     return f"₹{val:,.0f}"
@@ -3744,17 +3754,17 @@ def page_dashboard():
     pnl_color = "var(--accent-green)" if total_pnl >= 0 else "var(--accent-red)"
 
     # ── Net worth banner ──────────────────────────────────────
-    if "nw_hidden" not in st.session_state:
-        st.session_state.nw_hidden = True  # hidden by default
+    if "values_hidden" not in st.session_state:
+        st.session_state.values_hidden = True  # hidden by default
 
     def _mask(text):
-        return "••••••" if st.session_state.nw_hidden else text
+        return "••••••" if st.session_state.values_hidden else text
 
     nw_hcol1, nw_hcol2 = st.columns([10,1])
     with nw_hcol2:
-        eye = "🙈" if st.session_state.nw_hidden else "👁️"
-        if st.button(eye, key="toggle_nw_visibility", help="Show/hide net worth values"):
-            st.session_state.nw_hidden = not st.session_state.nw_hidden
+        eye = "🙈" if st.session_state.values_hidden else "👁️"
+        if st.button(eye, key="toggle_nw_visibility", help="Show/hide ALL financial values across the app"):
+            st.session_state.values_hidden = not st.session_state.values_hidden
             st.rerun()
 
     st.markdown(f"""<div style="background:var(--bg-card);border:1px solid var(--border);
@@ -3983,15 +3993,14 @@ def page_wealth():
         st.markdown(header_html, unsafe_allow_html=True)
 
     # ── Import from Excel template ─────────────────────────────
-    with st.expander("📥 Import from Excel Template", expanded=not p.get("self_name")):
-        st.markdown(
-            '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">'
-            'For a full backup/restore covering portfolios, wealth profile, and mutual funds together, '
-            'use the <b>💾 Backup & Restore</b> section on the Dashboard instead — that\'s the one place '
-            'that saves and restores everything at once.</div>',
-            unsafe_allow_html=True
-        )
-        render_template_import_inner()
+    st.markdown(
+        '<div style="font-size:11px;color:var(--text-muted);margin:8px 0;">'
+        'For a full backup/restore covering portfolios, wealth profile, and mutual funds together, '
+        'use the <b>💾 Backup & Restore</b> section on the Dashboard instead — that\'s the one place '
+        'that saves and restores everything at once.</div>',
+        unsafe_allow_html=True
+    )
+    render_template_import_inner()
 
     # ── Sub-tabs ──────────────────────────────────────────────
     wtabs = st.tabs(["👤 Profile", "🏦 Assets", "✏️ Edit Holdings", "💳 Loans", "🎯 Goals", "📈 Projections"])

@@ -73,8 +73,12 @@ def fv_annuity(monthly, rate_pct_pa, years):
     if r == 0: return monthly * n
     return monthly * (((1 + r) ** n - 1) / r) * (1 + r)
 
+def _values_hidden():
+    return st.session_state.get("values_hidden", True)
+
 def fmt(n):
     if n is None: return "₹0"
+    if _values_hidden(): return "••••••"
     n = float(n)
     if abs(n) >= 1e7:  return f"₹{n/1e7:.2f} Cr"
     if abs(n) >= 1e5:  return f"₹{n/1e5:.2f} L"

@@ -115,8 +115,12 @@ def nav_period_ret(history, days):
     except Exception:
         return None
 
+def _values_hidden():
+    return st.session_state.get("values_hidden", True)
+
 def fmt(n):
     if n is None: return "—"
+    if _values_hidden(): return "••••••"
     n = float(n)
     if n >= 1e7:  return f"Rs {n/1e7:.2f} Cr"
     if n >= 1e5:  return f"Rs {n/1e5:.2f} L"

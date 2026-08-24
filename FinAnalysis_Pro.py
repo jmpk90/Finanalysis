@@ -3744,6 +3744,19 @@ def page_dashboard():
     pnl_color = "var(--accent-green)" if total_pnl >= 0 else "var(--accent-red)"
 
     # ── Net worth banner ──────────────────────────────────────
+    if "nw_hidden" not in st.session_state:
+        st.session_state.nw_hidden = True  # hidden by default
+
+    def _mask(text):
+        return "••••••" if st.session_state.nw_hidden else text
+
+    nw_hcol1, nw_hcol2 = st.columns([10,1])
+    with nw_hcol2:
+        eye = "🙈" if st.session_state.nw_hidden else "👁️"
+        if st.button(eye, key="toggle_nw_visibility", help="Show/hide net worth values"):
+            st.session_state.nw_hidden = not st.session_state.nw_hidden
+            st.rerun()
+
     st.markdown(f"""<div style="background:var(--bg-card);border:1px solid var(--border);
         border-left:4px solid var(--accent-gold);border-radius:10px;
         padding:20px 24px;margin-bottom:20px;
@@ -3752,25 +3765,25 @@ def page_dashboard():
             <div style="font-size:13px;color:var(--text-muted);font-weight:500;
                 letter-spacing:0.5px;margin-bottom:4px;">TOTAL FAMILY NET WORTH</div>
             <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:36px;font-weight:700;color:var(--text-primary);">
-                {fmt_inr(family_nw)}</div>
+                {_mask(fmt_inr(family_nw))}</div>
             <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
                 Stocks + MF + Wealth − Loans</div>
         </div>
         <div style="display:flex;gap:24px;flex-wrap:wrap;">
             <div style="text-align:center;">
                 <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px;">STOCKS</div>
-                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:18px;font-weight:600;color:var(--text-primary);">{fmt_inr(total_mkt)}</div>
-                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:11px;color:{pnl_color};">{total_pnl:+,.0f}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:18px;font-weight:600;color:var(--text-primary);">{_mask(fmt_inr(total_mkt))}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:11px;color:{pnl_color};">{_mask(f"{total_pnl:+,.0f}")}</div>
             </div>
             <div style="text-align:center;">
                 <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px;">MF</div>
-                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:18px;font-weight:600;color:var(--text-primary);">{fmt_inr(mf_value)}</div>
-                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:11px;color:var(--accent-blue);">SIP {fmt_inr(mf_sip)}/mo</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:18px;font-weight:600;color:var(--text-primary);">{_mask(fmt_inr(mf_value))}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:11px;color:var(--accent-blue);">SIP {_mask(fmt_inr(mf_sip))}/mo</div>
             </div>
             <div style="text-align:center;">
                 <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px;">WEALTH</div>
-                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:18px;font-weight:600;color:var(--text-primary);">{fmt_inr(wealth_total)}</div>
-                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:11px;color:var(--accent-red);">Loans {fmt_inr(loan_total)}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:18px;font-weight:600;color:var(--text-primary);">{_mask(fmt_inr(wealth_total))}</div>
+                <div style="font-family:var(--font-mono,'IBM Plex Mono',monospace);font-size:11px;color:var(--accent-red);">Loans {_mask(fmt_inr(loan_total))}</div>
             </div>
         </div>
     </div>""", unsafe_allow_html=True)
@@ -3956,12 +3969,18 @@ def page_wealth():
 
     # ── Header ─────────────────────────────────────────────────
     if p.get("self_name"):
-        st.markdown(f"""<div style="background:var(--bg-card);border:1px solid var(--border);
-            border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:12px;">
-            <span style="color:var(--accent-green);font-weight:600;">✅ {p.get('self_name')}</span>
-            {"  +  <span style='color:var(--accent-gold);font-weight:600;'>" + p.get('spouse_name','') + "</span>" if p.get('include_spouse') and p.get('spouse_name') else ""}
-            <span style="color:var(--text-muted);margin-left:8px;">profile loaded — full backup available on the Dashboard</span>
-        </div>""", unsafe_allow_html=True)
+        spouse_html = ""
+        if p.get("include_spouse") and p.get("spouse_name"):
+            spouse_html = f'&nbsp;&nbsp;+&nbsp;&nbsp;<span style="color:var(--accent-gold);font-weight:600;">{p.get("spouse_name")}</span>'
+        header_html = (
+            '<div style="background:var(--bg-card);border:1px solid var(--border);'
+            'border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:12px;">'
+            f'<span style="color:var(--accent-green);font-weight:600;">✅ {p.get("self_name")}</span>'
+            f'{spouse_html}'
+            '<span style="color:var(--text-muted);margin-left:8px;">profile loaded — full backup available on the Dashboard</span>'
+            '</div>'
+        )
+        st.markdown(header_html, unsafe_allow_html=True)
 
     # ── Import from Excel template ─────────────────────────────
     with st.expander("📥 Import from Excel Template", expanded=not p.get("self_name")):

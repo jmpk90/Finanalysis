@@ -133,6 +133,11 @@ def owner_tag_html(owner, self_name="Self", spouse_name="Spouse"):
     return (f'<span style="font-size:10px;font-weight:600;padding:2px 9px;border-radius:20px;'
             f'background:{c["bg"]};color:{c["text"]};border:1px solid {c["border"]};">{label}</span>')
 
+def owner_badge_html(owner_label, oc):
+    """Minimal single-line badge — deliberately simple/isolated to avoid
+    the fragility of embedding it inside a larger multi-line HTML block."""
+    return f'<span style="font-size:9px;font-weight:600;padding:2px 7px;border-radius:20px;background:{oc["bg"]};color:{oc["text"]};border:1px solid {oc["border"]};">{owner_label}</span>'
+
 # ═══════════════════════════════════════════════════════════════════
 # PERSISTENCE — routed through equitex_store (per-browser, cookie-keyed).
 # Previously used a fixed shared file here; removed after discovering
@@ -757,27 +762,25 @@ def render_assets_section():
                 st.markdown('</div>', unsafe_allow_html=True)
             continue
 
-        c_row, c_edit, c_del = st.columns([10,1,1])
-        with c_row:
-            gain_str = (f'<span style="color:{gc};font-size:11px;">{fmt(gain)}</span>' if inv > 0 else '<span style="color:var(--text-muted);font-size:11px;">—</span>')
-            safe_name  = _html.escape(str(a.get('name','Asset')))
-            safe_type  = _html.escape(str(a.get('type','—')))
-            safe_owner = _html.escape(str(owner_label))
-            st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
-                background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
-                <div style="flex:2;font-size:13px;color:var(--text-primary);">
-                    {safe_name}
-                    {'<span style="font-size:9px;color:var(--text-muted);margin-left:6px;">AUTO</span>' if is_legacy else ''}
-                </div>
-                <div style="flex:1;font-size:11px;color:var(--text-muted);">{safe_type}</div>
-                <div style="width:80px;">
-                    <span style="font-size:10px;font-weight:600;padding:2px 7px;border-radius:20px;
-                        background:{oc['bg']};color:{oc['text']};border:1px solid {oc['border']};">{safe_owner}</span>
-                </div>
-                <div style="width:110px;text-align:right;font-size:12px;color:var(--text-secondary);">{fmt(inv) if inv>0 else "—"}</div>
-                <div style="width:110px;text-align:right;font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(val)}</div>
-                <div style="width:80px;text-align:right;">{gain_str}</div>
+        rc1, rc2, rc3, rc4, rc5, rc_edit, rc_del = st.columns([2.2,1.2,0.9,1.1,1.1,0.5,0.5])
+        with rc1:
+            label = str(a.get('name','Asset'))
+            if is_legacy: label += "  ·  🔗 auto"
+            st.markdown(f"**{label}**")
+        with rc2:
+            st.caption(str(a.get('type','—')))
+        with rc3:
+            st.markdown(owner_badge_html(owner, oc), unsafe_allow_html=True)
+        with rc4:
+            st.markdown(f"<div style='text-align:right;font-size:12px;color:var(--text-secondary);'>{fmt(inv) if inv>0 else '—'}</div>", unsafe_allow_html=True)
+        with rc5:
+            gain_txt = fmt(gain) if inv > 0 else "—"
+            gcol = "var(--accent-green)" if (inv<=0 or gain>=0) else "var(--accent-red)"
+            st.markdown(f"""<div style='text-align:right;'>
+                <div style='font-size:13px;font-weight:600;color:var(--accent-gold);'>{fmt(val)}</div>
+                <div style='font-size:10px;color:{gcol};'>{gain_txt}</div>
             </div>""", unsafe_allow_html=True)
+        c_edit, c_del = rc_edit, rc_del
         with c_edit:
             if not is_legacy:
                 if st.button("✏️", key=f"edit_asset_{real_idx}", help="Edit"):

@@ -1402,13 +1402,7 @@ def page_mf_portfolio():
                             # Save
                             store["accounts"] = accounts
                             store["last_refresh"] = str(__import__("datetime").datetime.now().strftime("%d %b %Y %H:%M"))
-                            st.session_state.mf_store = store
-
-                            # Write to disk
-                            import json, os
-                            _path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "equitex_mf_portfolio.json")
-                            with open(_path,"w") as _jf:
-                                json.dump(store, _jf, indent=2, default=str)
+                            save_store(store)
 
                             sync_to_finance(store)
                             st.session_state.pop("_cas_parsed", None)

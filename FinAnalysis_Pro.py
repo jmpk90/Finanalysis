@@ -2202,6 +2202,7 @@ def generate_excel_report(results):
 # ─────────────────────────────────────────────
 def render_navbar():
     portfolios = st.session_state.get("portfolios", [])
+    from equitex_store import current_profile_name
 
     # ── Top bar: brand + theme + quick stats ──────────────────
     st.markdown(f"""
@@ -2213,6 +2214,7 @@ def render_navbar():
         </div>
         <div style="flex:1;"></div>
         <div style="font-size:11px;color:var(--text-muted);">
+            👤 {current_profile_name()} &nbsp;·&nbsp;
             {len(portfolios)} portfolio{'s' if len(portfolios)!=1 else ''} &nbsp;·&nbsp;
             {sum(len(pf.get('stocks',[])) for pf in portfolios)} stocks
         </div>
@@ -2242,6 +2244,15 @@ def render_navbar():
             <div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;">
                 INDIAN EQUITY TERMINAL</div>
         </div>""", unsafe_allow_html=True)
+
+        lc1, lc2 = st.columns([3,1])
+        with lc1:
+            st.markdown(f'<div style="padding:10px 0 0 0;font-size:12px;color:var(--text-secondary);">👤 {current_profile_name()}</div>', unsafe_allow_html=True)
+        with lc2:
+            if st.button("⏻", key="logout_btn", help="Logout"):
+                from equitex_store import sign_out
+                sign_out()
+                st.rerun()
 
         st.markdown("""<div style="font-size:10px;font-weight:600;letter-spacing:1.5px;
             color:var(--text-muted);padding:14px 12px 6px;text-transform:uppercase;">
@@ -3814,19 +3825,18 @@ def page_dashboard():
                 </div>
             </div>""", unsafe_allow_html=True)
 
-    # ── Backup & Restore reminder — always visible, not hidden in a collapsed expander ──
+    # ── Backup & Restore — good practice, not a survival necessity now ──
     st.markdown('<br>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:11px;color:var(--text-muted);padding:6px 2px;">'
-        '💾 Tip: click <b>Download Backup</b> below before rebooting the app or pushing new code — '
-        'that\'s when data can be lost, not during normal use.</div>',
+        '💾 Your data is saved in a real database now, so app reboots/redeploys won\'t wipe it — '
+        'but a backup is still good practice in case you ever want to move accounts.</div>',
         unsafe_allow_html=True
     )
     with st.expander("💾 Backup & Restore"):
         st.markdown("""<div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
-            Your portfolios, wealth profile, and mutual fund data are saved on the server, tied to this
-            browser only — other visitors can't see it. However, an app reboot or redeploy can wipe this
-            storage, so download a backup before either of those, or any time you want extra safety.
+            Your portfolios, wealth profile, and mutual fund data are saved to your account,
+            protected by your login — no one else can see or restore it without your password.
         </div>""", unsafe_allow_html=True)
 
         bcol1, bcol2 = st.columns(2)
@@ -3852,22 +3862,6 @@ def page_dashboard():
                     st.rerun()
                 else:
                     st.error(msg)
-
-    # ── Security: rotate ID if you ever shared your app link ──
-    with st.expander("🔒 Security — I accidentally shared my app link"):
-        st.markdown("""<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
-            An earlier version of this app could leak your data if you shared your app's URL with
-            someone (it sometimes appeared with a <code>?uid=...</code> part). If you've ever sent
-            your app link to anyone, click below — it moves your data to a brand-new private ID that
-            was never exposed to them, cutting off their access immediately.
-        </div>""", unsafe_allow_html=True)
-        if st.button("🔄 Rotate my ID now (fixes a shared link)", key="rotate_id_btn", type="primary"):
-            from equitex_store import rotate_device_id
-            rotate_device_id()
-            for k in ["_restored"]:
-                st.session_state[k] = False
-            st.success("✅ Done — your data now lives under a fresh, private ID. The old link no longer has access.")
-            st.rerun()
 
     # ── Danger zone: delete everything ─────────────────────────
     with st.expander("🗑️ Delete Profile — Full Reset"):
@@ -4151,6 +4145,11 @@ def main():
             st.session_state[k] = v
 
     inject_theme()
+
+    from equitex_store import render_login_gate
+    if not render_login_gate():
+        return
+
     render_storage_restore()
 
     try:

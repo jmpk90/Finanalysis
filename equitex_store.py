@@ -1,190 +1,231 @@
 # ═══════════════════════════════════════════════════════════════════
-# EQUITEX STORE — Cookie/query-param-keyed per-browser storage
+# EQUITEX STORE — Real accounts (Profile Name + Password)
 #
-# History: first version used a third-party localStorage component
-# (unreliable — lost data on refresh). Second version used a native
-# cookie set via a JS-triggered page reload (caused a blank-page
-# failure when the reload didn't complete cleanly). This version
-# never halts or reloads the page — it determines a per-browser ID
-# synchronously in one pass (cookie, then URL ?uid= param, then a
-# freshly minted one written straight into the URL) and keeps
-# rendering normally either way.
+# Replaces the earlier cookie/device-ID approach entirely. That system
+# went through several iterations (browser localStorage, then cookies,
+# then a URL-based fallback) and each had a real failure mode — data
+# loss on refresh, a URL that could leak identity if shared, and a
+# separate shared-file bug in the Wealth module. This version uses
+# Supabase Auth for real password-based login, which doesn't depend on
+# browser storage tricks at all.
 #
-# Data is stored server-side in a small JSON file per device ID — a
-# plain, boring, synchronous file read/write.
+# No real email required: signup only asks for a Profile Name and
+# Password. Internally, the profile name is converted into a synthetic
+# address (e.g. "rahul@equitex.internal") purely because Supabase's
+# auth API expects an email-shaped string — nothing is ever sent there,
+# and the person never sees or types an email anywhere.
 #
-# Residual trade-off: Streamlit Cloud's free-tier filesystem is
-# ephemeral, so a redeploy or long sleep/wake cycle can wipe these
-# files — ordinary refreshes and normal usage are NOT affected, only
-# redeploys. The Backup & Restore download button on the Dashboard
-# remains the safety net for that rarer case.
+# Isolation is enforced by the DATABASE itself via Row Level Security
+# (see supabase_setup.sql) — each row is only ever visible to the
+# logged-in user it belongs to, checked by Postgres on every query, not
+# just by app-level logic.
 # ═══════════════════════════════════════════════════════════════════
 import json
-import os
-import uuid
+import re
 import streamlit as st
-import streamlit.components.v1 as components
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_DATA_DIR = os.path.join(_HERE, "equitex_user_data")
-os.makedirs(_DATA_DIR, exist_ok=True)
-
-_COOKIE_NAME = "equitex_device_id"
 _BACKUP_VERSION = 1
 
 
-def _get_device_id():
-    """Determine a stable per-browser ID — cookie ONLY, never the URL.
+def _get_client():
+    """One Supabase client per session, with the authenticated session
+    (if any) re-applied on every rerun."""
+    if "_sb_client" not in st.session_state:
+        from supabase import create_client
+        url = st.secrets.get("SUPABASE_URL", "")
+        key = st.secrets.get("SUPABASE_KEY", "")
+        st.session_state._sb_client = create_client(url, key)
 
-    A previous version also accepted a ?uid= query param as a fallback.
-    That was a real security bug: URLs get copy-pasted and shared, and
-    anyone who received a link with ?uid= in it inherited full access to
-    that person's data. Cookies don't have this problem — they aren't
-    included when you share a link, only when the browser that set them
-    revisits.
+    client = st.session_state._sb_client
+    sess = st.session_state.get("_sb_session")
+    if sess:
+        try:
+            client.auth.set_session(sess["access_token"], sess["refresh_token"])
+        except Exception:
+            pass
+    return client
 
-    If cookies are blocked in this browser, we fall back to a
-    session-only random ID (works for this visit, not persisted, never
-    exposed in the URL) rather than ever using something shareable.
-    """
-    if "_device_id" in st.session_state:
-        return st.session_state["_device_id"]
 
+def _synth_email(profile_name):
+    """Turn a profile name into a synthetic, never-contacted address —
+    just to satisfy Supabase Auth's email-shaped requirement."""
+    clean = re.sub(r'[^a-z0-9_]', '', profile_name.strip().lower().replace(" ", "_"))
+    return f"{clean}@equitex.internal"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# AUTH
+# ═══════════════════════════════════════════════════════════════════
+def is_logged_in():
+    return bool(st.session_state.get("_sb_user_id"))
+
+
+def current_profile_name():
+    return st.session_state.get("_sb_profile_name", "")
+
+
+def sign_up(profile_name, password):
+    if not profile_name or not profile_name.strip():
+        return False, "Enter a profile name."
+    if len(password) < 6:
+        return False, "Password must be at least 6 characters."
+    client = _get_client()
+    email = _synth_email(profile_name)
     try:
-        existing_cookie = st.context.cookies.get(_COOKIE_NAME)
+        resp = client.auth.sign_up({"email": email, "password": password})
+        if resp.session:
+            st.session_state._sb_session = {
+                "access_token": resp.session.access_token,
+                "refresh_token": resp.session.refresh_token,
+            }
+            st.session_state._sb_user_id = resp.user.id
+            st.session_state._sb_profile_name = profile_name.strip()
+            return True, "Profile created!"
+        return False, "Signup didn't return a session — check that 'Confirm email' is turned OFF in Supabase → Authentication → Providers → Email."
+    except Exception as e:
+        msg = str(e)
+        if "already registered" in msg.lower() or "already exists" in msg.lower() or "already been registered" in msg.lower():
+            return False, "That profile name is already taken — try logging in instead, or pick a different name."
+        return False, f"Could not create profile: {msg[:200]}"
+
+
+def sign_in(profile_name, password):
+    if not profile_name or not password:
+        return False, "Enter both profile name and password."
+    client = _get_client()
+    email = _synth_email(profile_name)
+    try:
+        resp = client.auth.sign_in_with_password({"email": email, "password": password})
+        st.session_state._sb_session = {
+            "access_token": resp.session.access_token,
+            "refresh_token": resp.session.refresh_token,
+        }
+        st.session_state._sb_user_id = resp.user.id
+        st.session_state._sb_profile_name = profile_name.strip()
+        return True, "Logged in!"
     except Exception:
-        existing_cookie = None
-
-    if existing_cookie:
-        st.session_state["_device_id"] = existing_cookie
-        return existing_cookie
-
-    new_id = str(uuid.uuid4())
-    st.session_state["_device_id"] = new_id
-    _try_set_cookie(new_id)
-    return new_id
+        return False, "Incorrect profile name or password."
 
 
-def _try_set_cookie(device_id):
-    """Fire-and-forget cookie set — no reload, no st.stop(). If the
-    browser blocks it, this session just won't persist across refresh —
-    safer than falling back to anything shareable."""
-    if st.session_state.get(f"_cookie_tried_{device_id}"):
-        return
-    st.session_state[f"_cookie_tried_{device_id}"] = True
+def sign_out():
     try:
-        components.html(f"""
-            <script>
-            document.cookie = "{_COOKIE_NAME}={device_id}; max-age=31536000; path=/; SameSite=Lax";
-            </script>
-        """, height=0)
+        _get_client().auth.sign_out()
     except Exception:
         pass
+    for k in ["_sb_session", "_sb_user_id", "_sb_profile_name", "_sb_client",
+              "portfolios", "fa_profile", "fa_loaded", "mf_store", "_restored"]:
+        st.session_state.pop(k, None)
 
 
-def rotate_device_id():
-    """Move this browser to a brand-new random ID, migrating its current
-    data along with it. Use this if you ever accidentally shared your
-    app URL (from before this fix) — anyone who opened that old link may
-    have gotten a cookie for your OLD id planted on their own browser,
-    which would keep working even after this fix ships. Rotating gives
-    you a fresh id that was never exposed to them, and abandons the old
-    one's data files."""
-    old_id = st.session_state.get("_device_id")
-    new_id = str(uuid.uuid4())
+def render_login_gate():
+    """Call at the very top of the app. Returns True if the person is
+    logged in and the rest of the app should render; otherwise shows
+    the login/signup screen and returns False."""
+    if is_logged_in():
+        return True
 
-    if old_id:
-        for item in ("portfolios", "profile", "mf_store"):
-            old_path = _paths(old_id, item)
-            if os.path.exists(old_path):
-                try:
-                    with open(old_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    with open(_paths(new_id, item), "w", encoding="utf-8") as f:
-                        json.dump(data, f, default=str)
-                    os.remove(old_path)  # abandon the old (potentially leaked) copy
-                except Exception:
-                    pass
+    st.markdown("""<div style="text-align:center;padding:40px 0 20px;">
+        <div style="font-size:28px;font-weight:700;">📘 EQUITEX PRO</div>
+        <div style="font-size:13px;color:#8b948c;margin-top:4px;">Sign in with a profile name and password — no email needed</div>
+    </div>""", unsafe_allow_html=True)
 
-    st.session_state["_device_id"] = new_id
-    st.session_state[f"_cookie_tried_{new_id}"] = False
-    _try_set_cookie(new_id)
-    return new_id
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        tab1, tab2 = st.tabs(["🔑 Login", "✨ Create Profile"])
 
+        with tab1:
+            name = st.text_input("Profile Name", key="login_name")
+            pw = st.text_input("Password", type="password", key="login_pw")
+            if st.button("Login", type="primary", width='stretch', key="login_btn"):
+                ok, msg = sign_in(name, pw)
+                if ok:
+                    st.rerun()
+                else:
+                    st.error(msg)
 
-def delete_all_data():
-    """Permanently delete everything for this browser's device ID —
-    portfolios, wealth profile, and mutual fund data. Irreversible unless
-    the user has a backup file to restore from."""
-    device_id = _get_device_id()
-    for item in ("portfolios", "profile", "mf_store"):
-        path = _paths(device_id, item)
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-            except Exception:
-                pass
+        with tab2:
+            name2 = st.text_input("Choose a Profile Name", key="signup_name")
+            pw2 = st.text_input("Choose a Password (min 6 characters)", type="password", key="signup_pw")
+            if st.button("Create Profile", type="primary", width='stretch', key="signup_btn"):
+                ok, msg = sign_up(name2, pw2)
+                if ok:
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+    return False
 
 
-def _paths(device_id, item):
-    return os.path.join(_DATA_DIR, f"{device_id}__{item}.json")
-
-
-def _read(item, default):
-    device_id = _get_device_id()
-    path = _paths(device_id, item)
-    if not os.path.exists(path):
+# ═══════════════════════════════════════════════════════════════════
+# STORAGE — each function only ever touches the logged-in user's own
+# row, enforced both here (via user_id) and at the database level
+# (Row Level Security policies in supabase_setup.sql).
+# ═══════════════════════════════════════════════════════════════════
+def _table_get(table, default):
+    uid = st.session_state.get("_sb_user_id")
+    if not uid:
         return default
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
+        client = _get_client()
+        resp = client.table(table).select("data").eq("user_id", uid).limit(1).execute()
+        if resp.data:
+            return json.loads(resp.data[0]["data"])
+        return default
+    except Exception as e:
+        st.warning(f"Could not load data: {e}")
         return default
 
 
-def _write(item, value):
-    device_id = _get_device_id()
-    path = _paths(device_id, item)
+def _table_save(table, value):
+    uid = st.session_state.get("_sb_user_id")
+    if not uid:
+        return
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(value, f, default=str)
+        client = _get_client()
+        payload = {"user_id": uid, "data": json.dumps(value, default=str)}
+        client.table(table).upsert(payload, on_conflict="user_id").execute()
     except Exception as e:
         st.warning(f"Could not save — please use Download Backup as a safeguard. ({e})")
 
 
-# ═══════════════════════════════════════════════════════════════════
-# PORTFOLIO STORAGE
-# ═══════════════════════════════════════════════════════════════════
 def get_portfolios():
-    return _read("portfolios", [])
+    return _table_get("portfolios", [])
 
 def save_portfolios(portfolios):
-    _write("portfolios", portfolios)
+    _table_save("portfolios", portfolios)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# FINANCE PROFILE STORAGE
-# ═══════════════════════════════════════════════════════════════════
 def get_finance_profile():
-    return _read("profile", {})
+    return _table_get("profiles", {})
 
 def save_finance_profile(profile):
-    _write("profile", profile)
+    _table_save("profiles", profile)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# MF STORE
-# ═══════════════════════════════════════════════════════════════════
 def get_mf_store():
-    return _read("mf_store", {})
+    return _table_get("mf_store", {})
 
 def save_mf_store(store):
-    _write("mf_store", store)
+    _table_save("mf_store", store)
+
+
+def delete_all_data():
+    """Wipe this account's data (all 3 tables) — the account itself
+    still exists, only the saved data is cleared."""
+    uid = st.session_state.get("_sb_user_id")
+    if not uid:
+        return
+    client = _get_client()
+    for table in ("portfolios", "profiles", "mf_store"):
+        try:
+            client.table(table).delete().eq("user_id", uid).execute()
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════════════
 # FULL BACKUP — export everything to one downloadable file, and restore
-# from it. Safety net for the redeploy/sleep-wake ephemeral-disk case.
+# from it.
 # ═══════════════════════════════════════════════════════════════════
 def export_full_backup():
     payload = {

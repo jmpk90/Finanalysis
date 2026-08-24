@@ -6,6 +6,7 @@ import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json, math, os as _os
+import html as _html
 from datetime import datetime
 
 # ── Benchmark returns (% p.a.) ───────────────────────────────────
@@ -133,34 +134,33 @@ def owner_tag_html(owner, self_name="Self", spouse_name="Spouse"):
             f'background:{c["bg"]};color:{c["text"]};border:1px solid {c["border"]};">{label}</span>')
 
 # ═══════════════════════════════════════════════════════════════════
-# PERSISTENCE
+# PERSISTENCE — routed through equitex_store (per-browser, cookie-keyed).
+# Previously used a fixed shared file here; removed after discovering
+# it caused wealth/income data to be visible across all visitors.
 # ═══════════════════════════════════════════════════════════════════
-def _profile_path():
-    here = _os.path.dirname(_os.path.abspath(__file__))
-    return _os.path.join(here, "equitex_profile.json")
-
 def fa_save():
+    """Save the wealth profile using the same per-browser cookie-keyed
+    storage as everything else in the app. This used to write to a
+    single fixed file (equitex_profile.json) shared by EVERY visitor —
+    a serious bug where one person's income/wealth data could be seen
+    and overwritten by anyone else using the app."""
     profile = st.session_state.get("fa_profile", {})
     if not profile: return
-    path = _profile_path()
+    from equitex_store import save_finance_profile
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(profile, f, indent=2, default=str)
-        st.session_state["fa_save_path"] = path
+        save_finance_profile(profile)
+        st.session_state["fa_last_saved"] = _os.times()  # just a monotonic marker, not a shared path
     except Exception as e:
         st.warning(f"⚠️ Could not save: {e}")
 
 def fa_load():
     if st.session_state.get("fa_loaded"): return
-    path = _profile_path()
-    if not _os.path.exists(path): return
+    from equitex_store import get_finance_profile
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            profile = json.load(f)
+        profile = get_finance_profile()
         if isinstance(profile, dict) and profile.get("self_name"):
             st.session_state.fa_profile = profile
             st.session_state.fa_loaded  = True
-            st.session_state["fa_save_path"] = path
     except Exception as e:
         st.warning(f"⚠️ Could not load profile: {e}")
 
@@ -294,12 +294,8 @@ def render_profile_section():
     with sc1:
         save_clicked = st.button("💾 Save Profile", key="fa_save_profile", type="primary", width='stretch')
     with sc2:
-        import datetime as _dt
-        save_path = st.session_state.get("fa_save_path","")
-        if save_path and _os.path.exists(save_path):
-            mtime = _os.path.getmtime(save_path)
-            saved_at = _dt.datetime.fromtimestamp(mtime).strftime("%d %b %Y %H:%M")
-            st.markdown(f'<div style="margin-top:8px;font-size:11px;color:var(--text-muted);">💾 Last saved: <b style="color:var(--accent-green);">{saved_at}</b></div>', unsafe_allow_html=True)
+        if st.session_state.get("fa_last_saved"):
+            st.markdown('<div style="margin-top:8px;font-size:11px;color:var(--text-muted);">💾 <b style="color:var(--accent-green);">Saved</b></div>', unsafe_allow_html=True)
 
     if save_clicked:
         p = get_profile()
@@ -764,16 +760,19 @@ def render_assets_section():
         c_row, c_edit, c_del = st.columns([10,1,1])
         with c_row:
             gain_str = (f'<span style="color:{gc};font-size:11px;">{fmt(gain)}</span>' if inv > 0 else '<span style="color:var(--text-muted);font-size:11px;">—</span>')
+            safe_name  = _html.escape(str(a.get('name','Asset')))
+            safe_type  = _html.escape(str(a.get('type','—')))
+            safe_owner = _html.escape(str(owner_label))
             st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
                 background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
                 <div style="flex:2;font-size:13px;color:var(--text-primary);">
-                    {a.get('name','Asset')}
+                    {safe_name}
                     {'<span style="font-size:9px;color:var(--text-muted);margin-left:6px;">AUTO</span>' if is_legacy else ''}
                 </div>
-                <div style="flex:1;font-size:11px;color:var(--text-muted);">{a.get('type','—')}</div>
+                <div style="flex:1;font-size:11px;color:var(--text-muted);">{safe_type}</div>
                 <div style="width:80px;">
                     <span style="font-size:10px;font-weight:600;padding:2px 7px;border-radius:20px;
-                        background:{oc['bg']};color:{oc['text']};border:1px solid {oc['border']};">{owner_label}</span>
+                        background:{oc['bg']};color:{oc['text']};border:1px solid {oc['border']};">{safe_owner}</span>
                 </div>
                 <div style="width:110px;text-align:right;font-size:12px;color:var(--text-secondary);">{fmt(inv) if inv>0 else "—"}</div>
                 <div style="width:110px;text-align:right;font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(val)}</div>
@@ -922,7 +921,7 @@ def render_wealth_holdings_section():
                 with r1:
                     st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
                         background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
-                        <div style="flex:2;font-size:13px;">{g.get('type','Gold')} — {g.get('grams',0)}g</div>
+                        <div style="flex:2;font-size:13px;">{_html.escape(str(g.get('type','Gold')))} — {g.get('grams',0)}g</div>
                         <div style="flex:1;text-align:right;font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(gval)}</div>
                     </div>""", unsafe_allow_html=True)
                 with r2:
@@ -976,7 +975,7 @@ def render_wealth_holdings_section():
                 with r1:
                     st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
                         background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
-                        <div style="flex:2;font-size:13px;">FD — {f.get('bank','Bank')} ({f.get('rate',0)}%)</div>
+                        <div style="flex:2;font-size:13px;">FD — {_html.escape(str(f.get('bank','Bank')))} ({f.get('rate',0)}%)</div>
                         <div style="flex:1;text-align:right;font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(f.get('amount',0))}</div>
                     </div>""", unsafe_allow_html=True)
                 with r2:
@@ -1052,7 +1051,7 @@ def render_wealth_holdings_section():
                 with r1c:
                     st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
                         background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
-                        <div style="flex:2;font-size:13px;">{r.get('name','Property')} ({r.get('type','Residential')})</div>
+                        <div style="flex:2;font-size:13px;">{_html.escape(str(r.get('name','Property')))} ({_html.escape(str(r.get('type','Residential')))})</div>
                         <div style="flex:1;text-align:right;font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(r.get('current',0))}</div>
                     </div>""", unsafe_allow_html=True)
                 with r2c:

@@ -468,7 +468,7 @@ def render_budget_section():
     has_spouse  = bool(p.get("include_spouse"))
 
     if not p.get("self_name"):
-        st.info("👤 Fill in your Profile & Income tab first.")
+        st.info("Fill in the Profile tab first.")
         return
 
     # ── Month + Year picker (free selection) ──────────────────
@@ -1149,7 +1149,7 @@ def render_family_dashboard():
     has_spouse  = bool(p.get("include_spouse"))
 
     if not p.get("self_name"):
-        st.info("👤 Fill in your Profile & Income tab first.")
+        st.info("Fill in the Profile tab first.")
         return
 
     mk = st.session_state.get("fa_budget_month", current_month_key())
@@ -1907,7 +1907,7 @@ def render_ai_advisor_section():
 def render_overview_section():
     p = get_profile()
     if not p.get("self_name"):
-        st.info("👤 Fill in your Profile & Income tab first to see your overview.")
+        st.info("Fill in the Profile tab first to see your overview.")
         return
 
     self_name   = p.get("self_name","Self")

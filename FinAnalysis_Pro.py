@@ -33,6 +33,35 @@ warnings.filterwarnings("ignore")
 import logging, uuid
 _log = logging.getLogger("equitex.app")
 
+import html as _html_mod
+
+def _esc(v):
+    """HTML-escape user-supplied text (profile names, portfolio names…) for unsafe_allow_html."""
+    return _html_mod.escape("" if v is None else str(v), quote=True)
+
+def _install_html_cleaner():
+    """Markdown treats any line indented 4+ spaces after a blank line as a CODE BLOCK.
+    Our f-string HTML often yields blank/indented lines (e.g. an empty optional field),
+    which made stray text like '</div>' appear on screen. Clean every HTML snippet once, here."""
+    import re as _re
+    from streamlit.delta_generator import DeltaGenerator
+    if getattr(DeltaGenerator, "_eq_clean_installed", False):
+        return
+    _orig = DeltaGenerator.markdown
+    def _clean(body):
+        body = _re.sub(r"(?m)^[ \t]+", "", body)      # drop leading indentation
+        body = _re.sub(r"\n\s*\n+", "\n", body)        # drop blank lines
+        return body
+    def _markdown(self, body, *a, **kw):
+        if kw.get("unsafe_allow_html") and isinstance(body, str) and "<" in body:
+            body = _clean(body)
+        return _orig(self, body, *a, **kw)
+    DeltaGenerator.markdown = _markdown
+    st.markdown = lambda body, *a, **kw: _markdown(st._main, body, *a, **kw)
+    DeltaGenerator._eq_clean_installed = True
+
+_install_html_cleaner()
+
 def _report_error(label):
     """Log the full traceback server-side; show the user only a short message
     plus a reference ID (never stack traces, file paths or secrets)."""
@@ -50,7 +79,7 @@ st.set_page_config(
     page_title="EQUITEX PRO · Indian Equity Intelligence",
     page_icon="◈",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # ─────────────────────────────────────────────
@@ -85,7 +114,8 @@ THEMES = {
         "--glow-green":    "rgba(31,138,95,0.08)",
         "--glow-red":      "rgba(162,59,65,0.08)",
         "--glow-gold":     "rgba(14,110,88,0.10)",
-        "--navbar-bg":     "#152520",
+        "--navbar-bg":     "#172236",
+        "--sidebar-bg":    "#172236",
         "--navbar-text":   "#F0F1EA",
         "--score-bg":      "#E6E8DF",
         "--is-light":      "1",
@@ -830,6 +860,21 @@ NEGATIVE_WORDS = ["loss","decline","fall","crash","weak","miss","downgrade","sel
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
+def page_header(title, eyebrow=""):
+    st.markdown(f'<div class="eq-ph"><p class="eq-eyebrow">{_esc(eyebrow)}</p><h1 class="eq-h1">{_esc(title)}</h1></div>',
+                unsafe_allow_html=True)
+
+def stat_cards(items):
+    """items: list of (label, value, sub, tone) — tone in {'', 'pos', 'neg'}"""
+    html = ['<div class="eq-stats">']
+    for label, value, sub, tone in items:
+        cls = f" eq-{tone}" if tone in ("pos", "neg") else ""
+        sub_html = f'<div class="eq-stat-sub{cls}">{_esc(sub)}</div>' if sub else ""
+        html.append(f'<div class="eq-stat"><p class="eq-stat-label">{_esc(label)}</p>'
+                    f'<div class="eq-stat-value{cls}">{_esc(value)}</div>{sub_html}</div>')
+    html.append('</div>')
+    st.markdown("".join(html), unsafe_allow_html=True)
+
 def _polish_css():
     """Small consistency layer on top of the theme: bordered containers,
     forms, buttons, inputs and mobile spacing all share one look."""
@@ -862,6 +907,85 @@ def _polish_css():
     /* never let wide tables / charts push the page sideways */
     [data-testid="stDataFrame"], .js-plotly-plot { max-width: 100%; }
     .block-container { max-width: 1280px; }
+    /* header stays (it holds the sidebar toggle on phones) but loses its white band */
+    [data-testid="stHeader"] { background: transparent !important; }
+
+    /* ── SIDEBAR: navy ── */
+    [data-testid="stSidebar"], [data-testid="stSidebarContent"] { background-color: var(--sidebar-bg) !important; border-right: 0 !important; }
+    [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] div, [data-testid="stSidebar"] li { color: #D5DBE6 !important; }
+    [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.14) !important; }
+    [data-testid="stSidebar"] .eq-brand { display:flex; align-items:center; gap:12px; padding: 6px 4px 22px; }
+    [data-testid="stSidebar"] .eq-brand-name { font-family: var(--font-serif,'Fraunces',serif); font-size: 20px; font-weight: 600; letter-spacing: .03em; line-height: 1.1; color: #FFFFFF !important; }
+    [data-testid="stSidebar"] .eq-brand-sub { font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: .2em; margin-top: 3px; color: #AEB8C9 !important; }
+    [data-testid="stSidebar"] .eq-sb-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: #AEB8C9 !important; padding: 22px 4px 8px; }
+    [data-testid="stSidebar"] .eq-profile { display:flex; align-items:center; gap:12px; padding: 18px 4px 8px; }
+    [data-testid="stSidebar"] .eq-avatar { width:36px; height:36px; border-radius:50%; background: rgba(255,255,255,.14); display:flex; align-items:center; justify-content:center; font-weight:600; color:#FFFFFF !important; }
+    [data-testid="stSidebar"] .eq-pname { font-size:14px; font-weight:600; color:#FFFFFF !important; }
+    [data-testid="stSidebar"] .eq-psub { font-size:12px; color:#AEB8C9 !important; }
+    [data-testid="stSidebar"] .eq-pf-row { display:flex; align-items:center; gap:8px; padding: 6px 4px; font-size: 13px; }
+    [data-testid="stSidebar"] .eq-pf-row .eq-dot { width:8px; height:8px; border-radius:50%; flex:none; }
+    [data-testid="stSidebar"] .sb-pos { color:#7FD1A8 !important; font-weight:600; }
+    [data-testid="stSidebar"] .sb-neg { color:#F0A3A8 !important; font-weight:600; }
+
+    /* main navigation: vertical list, no radio dots */
+    [data-testid="stSidebar"] .st-key-main_nav [role="radiogroup"] { flex-direction: column; gap: 4px; }
+    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"] {
+        width: 100%; margin: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer;
+        background: transparent; border: 0; transition: background .15s ease;
+    }
+    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"] > div:first-child { display: none; }
+    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"]:hover { background: rgba(255,255,255,.08); }
+    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"]:has(input:checked) { background: rgba(255,255,255,.14); }
+    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"] p { font-size: 14px; font-weight: 500; color: #D5DBE6 !important; }
+    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"]:has(input:checked) p { color: #FFFFFF !important; font-weight: 600; }
+
+    /* sidebar buttons */
+    [data-testid="stSidebar"] .stButton > button { border-color: rgba(255,255,255,.28) !important; color: #E6EBF2 !important; background: transparent !important; }
+    [data-testid="stSidebar"] .stButton > button:hover { border-color: rgba(255,255,255,.6) !important; background: rgba(255,255,255,.08) !important; color:#FFFFFF !important; }
+
+    /* ── PRIMARY BUTTONS (both old and new Streamlit test-ids) ── */
+    [data-testid="baseButton-primary"], [data-testid="stBaseButton-primary"],
+    [data-testid="stSidebar"] [data-testid="stBaseButton-primary"], [data-testid="stSidebar"] [data-testid="baseButton-primary"] {
+        background: var(--accent-gold) !important; border-color: var(--accent-gold) !important; color: #FFFFFF !important; font-weight: 600 !important;
+    }
+    [data-testid="baseButton-primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
+    [data-testid="stSidebar"] [data-testid="stBaseButton-primary"]:hover, [data-testid="stSidebar"] [data-testid="baseButton-primary"]:hover {
+        background: #0A5A47 !important; border-color: #0A5A47 !important; color: #FFFFFF !important;
+    }
+    [data-testid="stBaseButton-primary"] p, [data-testid="baseButton-primary"] p { color: #FFFFFF !important; }
+
+    /* ── TABS: quiet text tabs with a green underline ── */
+    .stTabs [data-baseweb="tab-list"] { background: transparent !important; border-bottom: 1px solid var(--border) !important; gap: 26px !important; padding: 0 !important; }
+    .stTabs [data-baseweb="tab"] {
+        height: 44px !important; padding: 0 2px !important; background: transparent !important;
+        font-size: 14px !important; font-weight: 500 !important; letter-spacing: 0 !important; text-transform: none !important;
+        color: var(--text-secondary) !important;
+    }
+    .stTabs [data-baseweb="tab"]:hover { color: var(--accent-gold) !important; }
+    .stTabs [aria-selected="true"] { color: var(--accent-gold) !important; font-weight: 600 !important; }
+    .stTabs [data-baseweb="tab-highlight"] { background-color: var(--accent-gold) !important; height: 2px !important; }
+    .stTabs [data-baseweb="tab-border"] { display: none !important; }
+
+    /* ── PAGE HEADER + STAT CARDS ── */
+    .eq-ph { padding: 4px 0 22px; }
+    .eq-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: #5E6B64; margin: 0; }
+    .eq-h1 { font-family: var(--font-serif,'Fraunces',serif); font-size: 34px; font-weight: 600; line-height: 1.1; margin: 6px 0 0; color: var(--text-primary); }
+    .eq-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px,100%), 1fr)); gap: 14px; margin: 4px 0 20px; }
+    .eq-stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+    .eq-stat-label { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: #5E6B64; margin: 0; }
+    .eq-stat-value { font-family: var(--font-serif,'Fraunces',serif); font-size: 28px; font-weight: 600; margin-top: 8px; line-height: 1.1; color: var(--text-primary); font-variant-numeric: lining-nums tabular-nums; }
+    .eq-stat-sub { font-size: 13px; margin-top: 4px; color: #5E6B64; }
+    .eq-pos { color: #176B49 !important; } .eq-neg { color: #A23B41 !important; }
+    .eq-pf-head { display:flex; align-items:center; gap:10px; padding: 2px 0 12px; }
+    .eq-pf-head .eq-dot { width:10px; height:10px; border-radius:50%; flex:none; }
+    .eq-pf-name { font-family: var(--font-serif,'Fraunces',serif); font-size: 20px; font-weight: 600; color: var(--text-primary); }
+    .eq-pf-holder { font-size: 13px; color: #5E6B64; }
+    /* button labels: never cut off with "…" */
+    .stButton button p, [data-testid="stFormSubmitButton"] button p {
+        white-space: nowrap; overflow: visible !important; text-overflow: clip !important;
+    }
+    .stButton > button { letter-spacing: .4px !important; padding: .4rem .7rem !important; min-height: 38px; }
     @media (max-width: 640px) {
         .block-container { padding-left: .8rem !important; padding-right: .8rem !important; }
         [data-testid="stForm"] { padding: 14px !important; }
@@ -2262,94 +2386,68 @@ def generate_excel_report(results):
 # ─────────────────────────────────────────────
 # NAV BAR
 # ─────────────────────────────────────────────
+NAV_LABELS = [
+    ":material/dashboard:  Dashboard",
+    ":material/trending_up:  Portfolio",
+    ":material/account_balance:  Wealth",
+    ":material/pie_chart:  Budget",
+    ":material/chat:  AI Advisor",
+]
+
 def render_navbar():
     portfolios = st.session_state.get("portfolios", [])
     from equitex_store import current_profile_name
+    name = current_profile_name() or "You"
+    n_stocks = sum(len(pf.get("stocks", [])) for pf in portfolios)
 
-    # ── Top bar: brand + theme + quick stats ──────────────────
-    st.markdown(f"""
-    <div style="background:var(--bg-card);border-bottom:1px solid var(--border);
-        padding:0 24px;height:56px;display:flex;align-items:center;gap:20px;">
-        <div style="font-size:18px;font-weight:700;color:var(--text-primary);
-            letter-spacing:0.5px;flex-shrink:0;">
-            ◈ EQUITEX PRO
-        </div>
-        <div style="flex:1;"></div>
-        <div style="font-size:11px;color:var(--text-muted);">
-            👤 {current_profile_name()} &nbsp;·&nbsp;
-            {len(portfolios)} portfolio{'s' if len(portfolios)!=1 else ''} &nbsp;·&nbsp;
-            {sum(len(pf.get('stocks',[])) for pf in portfolios)} stocks
-        </div>
-    </div>""", unsafe_allow_html=True)
+    with st.sidebar:
+        st.markdown("""<div class="eq-brand">
+            <svg width="38" height="38" viewBox="0 0 36 36" aria-hidden="true"><rect width="36" height="36" rx="9" fill="#0E6E58"/><path d="M11 12h14M11 18h10M11 24h14" stroke="#F0F1EA" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg>
+            <div><div class="eq-brand-name">EQUITEX</div><div class="eq-brand-sub">PRO</div></div>
+        </div>""", unsafe_allow_html=True)
 
-    # ── Main navigation + actions row ─────────────────────────
-    col_nav, col_actions = st.columns([6, 2])
-    with col_nav:
-        page = st.radio(
-            "nav",
-            ["🏠  Dashboard", "📈  Portfolio", "🏦  Wealth", "📊  Budget", "🤖  AI Advisor"],
-            horizontal=True, label_visibility="collapsed", key="main_nav"
-        )
-    with col_actions:
-        if st.button("＋ Add Portfolio", key="nav_add_pf", width='stretch', type="primary"):
+        page = st.radio("Navigate", NAV_LABELS, label_visibility="collapsed", key="main_nav")
+
+        st.markdown('<div style="height:14px"></div>', unsafe_allow_html=True)
+        if st.button("Add portfolio", icon=":material/add:", key="nav_add_pf", width='stretch', type="primary"):
             st.session_state.show_add_portfolio = True
             st.rerun()
 
-    st.markdown('<div style="border-bottom:1px solid var(--border);margin:0 0 20px 0;"></div>', unsafe_allow_html=True)
-
-    # ── Sidebar ───────────────────────────────────────────────
-    with st.sidebar:
-        st.markdown(f"""
-        <div style="padding:16px 12px 14px;border-bottom:1px solid var(--border);">
-            <div style="font-size:16px;font-weight:700;color:var(--text-primary);
-                letter-spacing:0.5px;margin-bottom:2px;">◈ EQUITEX PRO</div>
-            <div style="font-size:10px;color:var(--text-muted);letter-spacing:1px;">
-                INDIAN EQUITY TERMINAL</div>
-        </div>""", unsafe_allow_html=True)
-
-        lc1, lc2 = st.columns([3,1])
-        with lc1:
-            st.markdown(f'<div style="padding:10px 0 0 0;font-size:12px;color:var(--text-secondary);">👤 {current_profile_name()}</div>', unsafe_allow_html=True)
-        with lc2:
-            if st.button("⏻", key="logout_btn", help="Logout"):
-                from equitex_store import sign_out
-                sign_out()
-                st.rerun()
-
-        st.markdown("""<div style="font-size:10px;font-weight:600;letter-spacing:1.5px;
-            color:var(--text-muted);padding:14px 12px 6px;text-transform:uppercase;">
-            My Portfolios</div>""", unsafe_allow_html=True)
-
+        st.markdown('<div class="eq-sb-label">My portfolios</div>', unsafe_allow_html=True)
         active_idx = st.session_state.get("active_portfolio_idx", 0)
         if portfolios:
             pf_names = [pf["name"] for pf in portfolios]
-            safe_idx = min(active_idx, len(pf_names)-1)
+            safe_idx = min(active_idx, len(pf_names) - 1)
             selected = st.radio("pf_select", pf_names, index=safe_idx,
                                 label_visibility="collapsed", key="sidebar_pf_radio")
             new_idx = pf_names.index(selected)
             if new_idx != active_idx:
                 st.session_state.active_portfolio_idx = new_idx
                 st.rerun()
-            st.markdown("<br>", unsafe_allow_html=True)
             for i, pf in enumerate(portfolios):
                 c    = pf.get("color", portfolio_color(i))
-                p    = pf.get("pnl_pct", 0)
-                pstr = f"+{p:.1f}%" if p >= 0 else f"{p:.1f}%"
-                pcol = "var(--accent-green)" if p >= 0 else "var(--accent-red)"
+                pv   = pf.get("pnl_pct", 0)
+                pstr = f"+{pv:.1f}%" if pv >= 0 else f"\u2212{abs(pv):.1f}%"
+                pcls = "sb-pos" if pv >= 0 else "sb-neg"
                 nstk = len(pf.get("stocks", []))
-                st.markdown(f"""<div style="display:flex;align-items:center;gap:8px;
-                    padding:4px 12px;margin-bottom:2px;">
-                    <div style="width:7px;height:7px;border-radius:50%;
-                        background:{c};flex-shrink:0;"></div>
-                    <span style="color:var(--text-secondary);flex:1;font-size:12px;">
-                        {pf['name'][:16]}</span>
-                    <span style="font-size:10px;color:var(--text-muted);">{nstk}stk</span>
-                    <span style="font-size:11px;font-weight:600;color:{pcol};">{pstr}</span>
-                </div>""", unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="eq-pf-row"><span class="eq-dot" style="background:{_esc(c)}"></span>'
+                    f'<span style="flex:1">{_esc(pf["name"][:16])}</span>'
+                    f'<span style="font-size:11px">{nstk} stk</span><span class="{pcls}">{pstr}</span></div>',
+                    unsafe_allow_html=True)
         else:
-            st.markdown("""<div style="font-size:12px;color:var(--text-muted);
-                padding:8px 12px;">No portfolios yet.<br>Click ＋ Add Portfolio to start.</div>""",
-                unsafe_allow_html=True)
+            st.markdown('<div style="font-size:13px;padding:4px;">No portfolios yet. Use Add portfolio to start.</div>',
+                        unsafe_allow_html=True)
+
+        st.markdown(
+            f'<div class="eq-profile"><div class="eq-avatar">{_esc(name[:1].upper())}</div>'
+            f'<div><div class="eq-pname">{_esc(name)}</div>'
+            f'<div class="eq-psub">{len(portfolios)} portfolio{"s" if len(portfolios)!=1 else ""} \u00b7 {n_stocks} stocks</div></div></div>',
+            unsafe_allow_html=True)
+        if st.button("Log out", icon=":material/logout:", key="logout_btn", width='stretch'):
+            from equitex_store import sign_out
+            sign_out()
+            st.rerun()
 
     return page
 
@@ -2658,47 +2756,53 @@ def render_portfolio_tab(pf, pf_idx):
     results = pf.get("results",[])
     color   = pf.get("color", portfolio_color(pf_idx))
 
-    col_info, col_btns = st.columns([3,2])
+    col_info = st.container()
+    col_btns = st.container()
     with col_info:
-        total_inv     = sum(s.get("invested",0) for s in stocks)
-        total_pnl_broker = sum(s.get("pnl_broker",0) for s in stocks)
-        pnl_col = "#00c87a" if total_pnl_broker >= 0 else "#ff3b5c"
+        total_inv        = sum(s_.get("invested", 0) for s_ in stocks)
+        total_pnl_broker = sum(s_.get("pnl_broker", 0) for s_ in stocks)
+        total_value      = sum(s_.get("market_value", 0) for s_ in stocks) or (total_inv + total_pnl_broker)
+        pnl_pct          = (total_pnl_broker / total_inv * 100) if total_inv else 0
         holder = pf.get("holder", "").strip()
-        st.markdown(f"""<div style="padding:0 0 6px;display:flex;align-items:center;gap:8px;">
-            <div style="width:9px;height:9px;border-radius:50%;background:{color};"></div>
-            <div style="font-size:15px;font-weight:700;color:var(--text-primary);">{pf.get('name','')}</div>
-            {f'<div style="font-size:11px;color:var(--text-muted);">· {holder}</div>' if holder else ''}
-        </div>""", unsafe_allow_html=True)
-        st.markdown(f"""<div style="padding:0 0 12px;font-family:'DM Mono',monospace;font-size:11px;color:var(--text-secondary);">
-            {len(stocks)} STOCKS &nbsp;·&nbsp; INVESTED: <span style="color:var(--text-primary);">₹{total_inv:,.0f}</span>
-            &nbsp;·&nbsp; P&L: <span style="color:{pnl_col};">₹{total_pnl_broker:+,.0f}</span>
-        </div>""", unsafe_allow_html=True)
+        holder_html = f'<span class="eq-pf-holder">\u00b7 {_esc(holder)}</span>' if holder else ""
+        st.markdown(
+            f'<div class="eq-pf-head"><span class="eq-dot" style="background:{_esc(color)}"></span>'
+            f'<span class="eq-pf-name">{_esc(pf.get("name",""))}</span>{holder_html}</div>',
+            unsafe_allow_html=True)
+        tone = "pos" if total_pnl_broker >= 0 else "neg"
+        sign = "+" if total_pnl_broker >= 0 else "\u2212"
+        stat_cards([
+            ("Holdings",       f"{len(stocks)}",                    "",                                  ""),
+            ("Invested",       f"\u20b9{total_inv:,.0f}",           "",                                  ""),
+            ("Current value",  f"\u20b9{total_value:,.0f}",         "",                                  ""),
+            ("Broker P&L",     f"{sign}\u20b9{abs(total_pnl_broker):,.0f}", f"{sign}{abs(pnl_pct):.1f}%", tone),
+        ])
     with col_btns:
         bc1,bc2,bc3,bc4,bc5 = st.columns(5)
         with bc1:
-            if st.button("＋ Stock", key=f"add_stock_{pf_idx}"):
+            if st.button("Add stock", icon=":material/add:", key=f"add_stock_{pf_idx}", width='stretch'):
                 st.session_state[f"show_add_stock_{pf_idx}"] = True
         with bc2:
-            if st.button("📂 Import", key=f"import_stocks_{pf_idx}"):
+            if st.button("Import", icon=":material/upload_file:", key=f"import_stocks_{pf_idx}", width='stretch'):
                 st.session_state[f"show_import_stocks_{pf_idx}"] = True
         with bc3:
-            if st.button("⊡ Sample", key=f"sample_{pf_idx}"):
+            if st.button("Load sample", icon=":material/layers:", key=f"sample_{pf_idx}", width='stretch'):
                 pf["stocks"] = DEFAULT_PORTFOLIO.copy()
                 pf["results"] = []; pf["analyzed"] = False
                 save_portfolios()
                 st.rerun()
         with bc4:
-            if st.button("⊘ Clear", key=f"clear_{pf_idx}"):
+            if st.button("Clear", icon=":material/backspace:", key=f"clear_{pf_idx}", width='stretch'):
                 pf["stocks"] = []; pf["results"] = []; pf["analyzed"] = False
                 save_portfolios()
                 st.rerun()
         with bc5:
-            if st.button("🗑 Delete", key=f"del_pf_{pf_idx}", type="secondary"):
+            if st.button("Delete", icon=":material/delete:", key=f"del_pf_{pf_idx}", type="secondary", width='stretch'):
                 st.session_state[f"confirm_del_{pf_idx}"] = True
 
     # Delete confirmation
     if st.session_state.get(f"confirm_del_{pf_idx}"):
-        st.markdown(f'<div class="warn-block">⚠️ Delete portfolio <b>{pf.get("name","")}</b>? This cannot be undone.</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="warn-block">⚠️ Delete portfolio <b>{_esc(pf.get("name",""))}</b>? This cannot be undone.</div>', unsafe_allow_html=True)
         dc1, dc2, _ = st.columns([1,1,3])
         with dc1:
             if st.button("✅ Yes, delete", key=f"yes_del_{pf_idx}", type="primary"):
@@ -2986,7 +3090,7 @@ def render_portfolio_results(results, pf, pf_idx):
                     st.session_state.az_ticker = ticker
                     st.session_state.az_period = "2y"
                     st.session_state.az_result = existing
-                    st.session_state.main_nav  = "🔍  Analyzer"
+                    st.session_state.main_nav  = NAV_LABELS[1]
                     st.rerun()
 
         alerts = concentration_risk(results)
@@ -3740,11 +3844,7 @@ def page_dashboard():
     """Single-page overview: stocks + MF + wealth + budget snapshot."""
     from datetime import datetime as _dt
 
-    st.markdown(f"""<div style="padding:0 0 20px;">
-        <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:24px;font-weight:600;color:var(--text-primary);">Dashboard</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
-            {_dt.now().strftime('%d %B %Y')} · Complete financial snapshot</div>
-    </div>""", unsafe_allow_html=True)
+    page_header("Dashboard", f"{_dt.now().strftime('%d %B %Y')} \u00b7 Complete financial snapshot")
 
     portfolios = st.session_state.get("portfolios", [])
 
@@ -3962,13 +4062,9 @@ def page_dashboard():
 # ═══════════════════════════════════════════════════════════════════
 def page_portfolio():
     """Stocks & Mutual Funds — both in sub-tabs."""
-    st.markdown("""<div style="padding:0 0 16px;">
-        <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:22px;font-weight:600;color:var(--text-primary);">Portfolio</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
-            Stocks · Mutual Funds · Analysis · Compare</div>
-    </div>""", unsafe_allow_html=True)
+    page_header("Portfolio", "Stocks \u00b7 Mutual funds \u00b7 Analysis")
 
-    sub = st.tabs(["📈 Stocks", "💼 Mutual Funds", "🔍 Analyzer", "⚖️ Compare"])
+    sub = st.tabs(["Stocks", "Mutual funds", "Analyzer", "Compare"])
 
     with sub[0]:
         # Stocks — existing page_overview logic
@@ -4004,59 +4100,43 @@ def page_portfolio():
 # PAGE: WEALTH — Assets, EPF, NPS, Gold, Property, FDs, Loans, Goals, Projections
 # ═══════════════════════════════════════════════════════════════════
 def page_wealth():
-    """All wealth / investment data from the Finance module — minus Budget."""
-    st.markdown("""<div style="padding:0 0 16px;">
-        <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:22px;font-weight:600;color:var(--text-primary);">Wealth</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
-            Assets · EPF/NPS · Gold · Property · FDs · Loans · Goals · Projections</div>
-    </div>""", unsafe_allow_html=True)
-
+    """Wealth: Overview, Profile, Assets, Liabilities, Goals, Projections."""
     from finance_advisor import (
-        fa_load, get_profile, render_profile_section,
+        fa_load, get_profile, render_overview_section, render_profile_section,
         render_assets_section, render_liabilities_section,
         render_goals_section, render_projections_section,
-        render_template_import_inner, render_wealth_holdings_section, fa_save
+        render_template_import_inner, render_wealth_holdings_section
     )
-    import json as _json
 
     if not st.session_state.get("fa_loaded"):
         fa_load()
-
     p = get_profile()
 
-    # ── Header ─────────────────────────────────────────────────
+    eyebrow = "Family"
     if p.get("self_name"):
-        spouse_html = ""
+        eyebrow = f"Family \u00b7 {p.get('self_name')}"
         if p.get("include_spouse") and p.get("spouse_name"):
-            spouse_html = f'&nbsp;&nbsp;+&nbsp;&nbsp;<span style="color:var(--accent-gold);font-weight:600;">{p.get("spouse_name")}</span>'
-        header_html = (
-            '<div style="background:var(--bg-card);border:1px solid var(--border);'
-            'border-radius:8px;padding:8px 14px;margin-bottom:16px;font-size:12px;">'
-            f'<span style="color:var(--accent-green);font-weight:600;">✅ {p.get("self_name")}</span>'
-            f'{spouse_html}'
-            '<span style="color:var(--text-muted);margin-left:8px;">profile loaded — full backup available on the Dashboard</span>'
-            '</div>'
-        )
-        st.markdown(header_html, unsafe_allow_html=True)
+            eyebrow += f" + {p.get('spouse_name')}"
+    page_header("Wealth", eyebrow)
 
-    # ── Import from Excel template ─────────────────────────────
-    st.markdown(
-        '<div style="font-size:11px;color:var(--text-muted);margin:8px 0;">'
-        'For a full backup/restore covering portfolios, wealth profile, and mutual funds together, '
-        'use the <b>💾 Backup & Restore</b> section on the Dashboard instead — that\'s the one place '
-        'that saves and restores everything at once.</div>',
-        unsafe_allow_html=True
-    )
-    render_template_import_inner()
-
-    # ── Sub-tabs ──────────────────────────────────────────────
-    wtabs = st.tabs(["👤 Profile", "🏦 Assets", "✏️ Edit Holdings", "💳 Loans", "🎯 Goals", "📈 Projections"])
-    with wtabs[0]: render_profile_section()
-    with wtabs[1]: render_assets_section()
-    with wtabs[2]: render_wealth_holdings_section()
-    with wtabs[3]: render_liabilities_section()
-    with wtabs[4]: render_goals_section()
-    with wtabs[5]: render_projections_section()
+    wtabs = st.tabs(["Overview", "Profile", "Assets", "Liabilities", "Goals", "Projections"])
+    with wtabs[0]:
+        render_overview_section()
+    with wtabs[1]:
+        render_profile_section()
+        st.markdown('<div style="height:18px"></div>', unsafe_allow_html=True)
+        render_template_import_inner()
+        st.caption("For a full backup of portfolios, wealth profile and mutual funds together, use Backup & Restore on the Dashboard.")
+    with wtabs[2]:
+        render_assets_section()
+        st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+        render_wealth_holdings_section()
+    with wtabs[3]:
+        render_liabilities_section()
+    with wtabs[4]:
+        render_goals_section()
+    with wtabs[5]:
+        render_projections_section()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -4064,11 +4144,7 @@ def page_wealth():
 # ═══════════════════════════════════════════════════════════════════
 def page_budget_tab():
     """Monthly budget & family financial dashboard."""
-    st.markdown("""<div style="padding:0 0 16px;">
-        <div style="font-family:var(--font-serif,'Fraunces',serif);font-size:22px;font-weight:600;color:var(--text-primary);">Budget</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
-            Monthly budgets · Family dashboard · Income & expense tracking</div>
-    </div>""", unsafe_allow_html=True)
+    page_header("Budget", "Monthly budgets \u00b7 Family dashboard")
 
     from finance_advisor import (
         fa_load, render_budget_section, render_family_dashboard
@@ -4076,7 +4152,7 @@ def page_budget_tab():
     if not st.session_state.get("fa_loaded"):
         fa_load()
 
-    btabs = st.tabs(["📊 Monthly Budget", "👨‍👩‍👧 Family Dashboard"])
+    btabs = st.tabs(["Monthly budget", "Family dashboard"])
     with btabs[0]: render_budget_section()
     with btabs[1]: render_family_dashboard()
 
@@ -4086,11 +4162,7 @@ def page_budget_tab():
 # ═══════════════════════════════════════════════════════════════════
 def page_ai_advisor():
     """AI advisor with context selector — stocks, MF, wealth, or full picture."""
-    st.markdown("""<div style="padding:0 0 16px;">
-        <div style="font-size:22px;font-weight:600;color:var(--text-primary);">AI Advisor</div>
-        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
-            Powered by Llama 3.3 via Groq · Analyse your stocks, MF, wealth or full portfolio</div>
-    </div>""", unsafe_allow_html=True)
+    page_header("AI Advisor", "Llama 3.3 via Groq \u00b7 Stocks, funds, wealth or the full picture")
 
     # ── Context selector ──────────────────────────────────────
     st.markdown("""<div style="font-size:12px;font-weight:600;color:var(--text-secondary);
@@ -4212,7 +4284,7 @@ def render_storage_restore():
 def main():
     defaults = {
         "portfolios": [], "active_portfolio_idx": 0,
-        "show_add_portfolio": False, "main_nav": "🏠  Dashboard",
+        "show_add_portfolio": False, "main_nav": NAV_LABELS[0],
         "theme": "ledger",
     }
     for k, v in defaults.items():

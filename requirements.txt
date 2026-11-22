@@ -1,4 +1,4 @@
-streamlit>=1.38.0
+streamlit>=1.50.0        # st.button/form_submit_button(width="stretch") needs a recent release
 yfinance>=0.2.36
 pandas>=2.0.0
 numpy>=1.26.0
@@ -8,3 +8,4 @@ openpyxl>=3.1.2
 pypdf>=4.0.0
 pdfplumber>=0.11.0
 supabase>=2.4.0
+casparser                # optional: better CAS PDF parsing (app falls back to regex without it)

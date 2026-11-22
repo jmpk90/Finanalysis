@@ -20,11 +20,26 @@
 # logged-in user it belongs to, checked by Postgres on every query, not
 # just by app-level logic.
 # ═══════════════════════════════════════════════════════════════════
+import hashlib
 import json
+import logging
 import re
+import time
+import unicodedata
 import streamlit as st
 
+_log = logging.getLogger("equitex.store")
+
 _BACKUP_VERSION = 1
+_MIN_PASSWORD_LEN = 8
+_MAX_FAILED_LOGINS = 5
+_LOCKOUT_SECONDS = 60
+_TABLES = ("portfolios", "profiles", "mf_store")
+
+# Session keys that belong to the *person*, not the browser tab. Everything
+# else in session_state is wiped on login/logout so one user can never see
+# another user's data (or API key) in a shared browser session.
+_KEEP_ON_RESET = {"theme", "main_nav"}
 
 
 def _get_client():
@@ -42,15 +57,41 @@ def _get_client():
         try:
             client.auth.set_session(sess["access_token"], sess["refresh_token"])
         except Exception:
-            pass
+            _log.warning("Could not re-apply Supabase session", exc_info=True)
     return client
+
+
+def _normalise_name(profile_name):
+    """Case-fold, collapse whitespace, Unicode-normalise."""
+    n = unicodedata.normalize("NFKC", profile_name or "")
+    return re.sub(r"\s+", " ", n).strip().casefold()
 
 
 def _synth_email(profile_name):
     """Turn a profile name into a synthetic, never-contacted address —
-    just to satisfy Supabase Auth's email-shaped requirement."""
+    just to satisfy Supabase Auth's email-shaped requirement.
+
+    Uses a hash of the normalised name, so names that differ only in
+    punctuation ("Rahul S" vs "rahul_s!") can no longer collide, and
+    non-Latin names (e.g. Devanagari) work."""
+    digest = hashlib.sha256(_normalise_name(profile_name).encode("utf-8")).hexdigest()[:24]
+    return f"u_{digest}@equitex.internal"
+
+
+def _legacy_synth_email(profile_name):
+    """The pre-hash scheme, kept ONLY so existing accounts can still log in."""
     clean = re.sub(r'[^a-z0-9_]', '', profile_name.strip().lower().replace(" ", "_"))
-    return f"{clean}@equitex.internal"
+    return f"{clean}@equitex.internal" if clean else None
+
+
+def _reset_user_state(keep_client=False):
+    """Wipe all per-user session data."""
+    client = st.session_state.get("_sb_client") if keep_client else None
+    for k in list(st.session_state.keys()):
+        if k not in _KEEP_ON_RESET:
+            st.session_state.pop(k, None)
+    if client is not None:
+        st.session_state._sb_client = client
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -64,57 +105,87 @@ def current_profile_name():
     return st.session_state.get("_sb_profile_name", "")
 
 
+def _lockout_remaining():
+    until = st.session_state.get("_login_locked_until", 0)
+    return max(0, int(until - time.time()))
+
+
+def _register_failed_login():
+    n = st.session_state.get("_login_failures", 0) + 1
+    st.session_state._login_failures = n
+    if n >= _MAX_FAILED_LOGINS:
+        st.session_state._login_locked_until = time.time() + _LOCKOUT_SECONDS
+        st.session_state._login_failures = 0
+
+
+def _start_session(resp, profile_name):
+    # Clear anything left over from a previous user BEFORE storing the new one.
+    _reset_user_state(keep_client=True)
+    st.session_state._sb_session = {
+        "access_token": resp.session.access_token,
+        "refresh_token": resp.session.refresh_token,
+    }
+    st.session_state._sb_user_id = resp.user.id
+    st.session_state._sb_profile_name = profile_name.strip()
+
+
 def sign_up(profile_name, password):
     if not profile_name or not profile_name.strip():
         return False, "Enter a profile name."
-    if len(password) < 6:
-        return False, "Password must be at least 6 characters."
+    if len(profile_name.strip()) > 40:
+        return False, "Profile name must be 40 characters or fewer."
+    if len(password) < _MIN_PASSWORD_LEN:
+        return False, f"Password must be at least {_MIN_PASSWORD_LEN} characters."
+    if _normalise_name(password) == _normalise_name(profile_name):
+        return False, "Password must be different from your profile name."
     client = _get_client()
     email = _synth_email(profile_name)
     try:
         resp = client.auth.sign_up({"email": email, "password": password})
         if resp.session:
-            st.session_state._sb_session = {
-                "access_token": resp.session.access_token,
-                "refresh_token": resp.session.refresh_token,
-            }
-            st.session_state._sb_user_id = resp.user.id
-            st.session_state._sb_profile_name = profile_name.strip()
+            _start_session(resp, profile_name)
             return True, "Profile created!"
-        return False, "Signup didn't return a session — check that 'Confirm email' is turned OFF in Supabase → Authentication → Providers → Email."
+        _log.error("Signup returned no session — is 'Confirm email' still ON in Supabase?")
+        return False, "Signup is not available right now. Please contact the app owner."
     except Exception as e:
-        msg = str(e)
-        if "already registered" in msg.lower() or "already exists" in msg.lower() or "already been registered" in msg.lower():
+        msg = str(e).lower()
+        if "already registered" in msg or "already exists" in msg or "already been registered" in msg:
             return False, "That profile name is already taken — try logging in instead, or pick a different name."
-        return False, f"Could not create profile: {msg[:200]}"
+        _log.error("Signup failed: %s", e)
+        return False, "Could not create profile. Please try again in a moment."
 
 
 def sign_in(profile_name, password):
     if not profile_name or not password:
         return False, "Enter both profile name and password."
+    wait = _lockout_remaining()
+    if wait:
+        return False, f"Too many failed attempts. Please wait {wait}s and try again."
     client = _get_client()
-    email = _synth_email(profile_name)
-    try:
-        resp = client.auth.sign_in_with_password({"email": email, "password": password})
-        st.session_state._sb_session = {
-            "access_token": resp.session.access_token,
-            "refresh_token": resp.session.refresh_token,
-        }
-        st.session_state._sb_user_id = resp.user.id
-        st.session_state._sb_profile_name = profile_name.strip()
-        return True, "Logged in!"
-    except Exception:
-        return False, "Incorrect profile name or password."
+    candidates = [_synth_email(profile_name)]
+    legacy = _legacy_synth_email(profile_name)
+    if legacy and legacy not in candidates:
+        candidates.append(legacy)          # accounts created before the hash scheme
+    for email in candidates:
+        try:
+            resp = client.auth.sign_in_with_password({"email": email, "password": password})
+            if resp and resp.session:
+                _start_session(resp, profile_name)
+                st.session_state._login_failures = 0
+                return True, "Logged in!"
+        except Exception:
+            continue
+    _register_failed_login()
+    return False, "Incorrect profile name or password."
 
 
 def sign_out():
     try:
         _get_client().auth.sign_out()
     except Exception:
-        pass
-    for k in ["_sb_session", "_sb_user_id", "_sb_profile_name", "_sb_client",
-              "portfolios", "fa_profile", "fa_loaded", "mf_store", "_restored"]:
-        st.session_state.pop(k, None)
+        _log.warning("Supabase sign_out failed", exc_info=True)
+    # Wipe EVERYTHING per-user: profile, portfolios, MF store, Groq key, widget state.
+    _reset_user_state(keep_client=False)
 
 
 def render_login_gate():
@@ -124,9 +195,21 @@ def render_login_gate():
     if is_logged_in():
         return True
 
-    st.markdown("""<div style="text-align:center;padding:40px 0 20px;">
-        <div style="font-size:28px;font-weight:700;">📘 EQUITEX PRO</div>
-        <div style="font-size:13px;color:#8b948c;margin-top:4px;">Sign in with a profile name and password — no email needed</div>
+    st.markdown("""
+    <style>
+    .eq-login-brand{text-align:center;padding:48px 0 22px;}
+    .eq-login-mark{display:inline-flex;align-items:center;justify-content:center;width:52px;height:52px;
+        border-radius:14px;background:var(--bg-card);border:1px solid var(--border);font-size:26px;
+        box-shadow:0 1px 2px rgba(25,38,35,.06);margin-bottom:14px;}
+    .eq-login-title{font-family:var(--font-serif,'Fraunces',serif);font-size:30px;font-weight:600;
+        color:var(--text-primary);letter-spacing:.5px;}
+    .eq-login-sub{font-size:13px;color:var(--text-muted);margin-top:6px;}
+    .eq-login-note{font-size:11px;color:var(--text-muted);text-align:center;margin-top:14px;line-height:1.6;}
+    </style>
+    <div class="eq-login-brand">
+        <div class="eq-login-mark">📘</div>
+        <div class="eq-login-title">EQUITEX PRO</div>
+        <div class="eq-login-sub">Sign in with a profile name and password — no email needed</div>
     </div>""", unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -134,9 +217,11 @@ def render_login_gate():
         tab1, tab2 = st.tabs(["🔑 Login", "✨ Create Profile"])
 
         with tab1:
-            name = st.text_input("Profile Name", key="login_name")
-            pw = st.text_input("Password", type="password", key="login_pw")
-            if st.button("Login", type="primary", width='stretch', key="login_btn"):
+            with st.form("login_form", clear_on_submit=False):
+                name = st.text_input("Profile Name", key="login_name")
+                pw = st.text_input("Password", type="password", key="login_pw")
+                submitted = st.form_submit_button("Login", type="primary", width='stretch')
+            if submitted:
                 ok, msg = sign_in(name, pw)
                 if ok:
                     st.rerun()
@@ -144,9 +229,15 @@ def render_login_gate():
                     st.error(msg)
 
         with tab2:
-            name2 = st.text_input("Choose a Profile Name", key="signup_name")
-            pw2 = st.text_input("Choose a Password (min 6 characters)", type="password", key="signup_pw")
-            if st.button("Create Profile", type="primary", width='stretch', key="signup_btn"):
+            with st.form("signup_form", clear_on_submit=False):
+                name2 = st.text_input("Choose a Profile Name", key="signup_name")
+                pw2 = st.text_input(f"Choose a Password (min {_MIN_PASSWORD_LEN} characters)",
+                                    type="password", key="signup_pw")
+                submitted2 = st.form_submit_button("Create Profile", type="primary", width='stretch')
+            st.markdown('<div class="eq-login-note">⚠️ There is <b>no password recovery</b> because no email is stored. '
+                        'Keep your password safe and download a backup from the Dashboard now and then.</div>',
+                        unsafe_allow_html=True)
+            if submitted2:
                 ok, msg = sign_up(name2, pw2)
                 if ok:
                     st.rerun()
@@ -168,45 +259,61 @@ def _table_get(table, default):
     try:
         client = _get_client()
         resp = client.table(table).select("data").eq("user_id", uid).limit(1).execute()
+        st.session_state[f"_load_failed_{table}"] = False
         if resp.data:
             return json.loads(resp.data[0]["data"])
         return default
-    except Exception as e:
-        st.warning(f"Could not load data: {e}")
+    except Exception:
+        # Remember the failure: _table_save will REFUSE to write to this table
+        # until a load succeeds, so a flaky network can never turn into
+        # "empty default overwrites the real data".
+        st.session_state[f"_load_failed_{table}"] = True
+        _log.error("Load failed for table %s", table, exc_info=True)
+        st.warning("Could not load your saved data right now. Saving is paused to protect it — please refresh in a moment.")
         return default
+
+
+def load_failed(table):
+    return bool(st.session_state.get(f"_load_failed_{table}"))
 
 
 def _table_save(table, value):
     uid = st.session_state.get("_sb_user_id")
     if not uid:
-        return
+        return False
+    if load_failed(table):
+        st.warning("Your saved data could not be loaded, so this change was NOT saved (to avoid overwriting it). Refresh and try again.")
+        return False
     try:
         client = _get_client()
         payload = {"user_id": uid, "data": json.dumps(value, default=str)}
         client.table(table).upsert(payload, on_conflict="user_id").execute()
-    except Exception as e:
-        st.warning(f"Could not save — please use Download Backup as a safeguard. ({e})")
+        return True
+    except Exception:
+        _log.error("Save failed for table %s", table, exc_info=True)
+        st.warning("Could not save — please use Download Backup as a safeguard.")
+        return False
 
 
 def get_portfolios():
     return _table_get("portfolios", [])
 
 def save_portfolios(portfolios):
-    _table_save("portfolios", portfolios)
+    return _table_save("portfolios", portfolios)
 
 
 def get_finance_profile():
     return _table_get("profiles", {})
 
 def save_finance_profile(profile):
-    _table_save("profiles", profile)
+    return _table_save("profiles", profile)
 
 
 def get_mf_store():
     return _table_get("mf_store", {})
 
 def save_mf_store(store):
-    _table_save("mf_store", store)
+    return _table_save("mf_store", store)
 
 
 def delete_all_data():
@@ -216,11 +323,14 @@ def delete_all_data():
     if not uid:
         return
     client = _get_client()
-    for table in ("portfolios", "profiles", "mf_store"):
+    for table in _TABLES:
         try:
             client.table(table).delete().eq("user_id", uid).execute()
         except Exception:
-            pass
+            _log.error("Delete failed for table %s", table, exc_info=True)
+        st.session_state.pop(f"_load_failed_{table}", None)
+    for k in ("portfolios", "fa_profile", "fa_loaded", "fa_hydrated", "mf_store"):
+        st.session_state.pop(k, None)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -245,14 +355,20 @@ def restore_full_backup(json_text):
 
     if not isinstance(payload, dict) or "_equitex_backup_version" not in payload:
         return False, "This file doesn't look like an EQUITEX PRO backup."
+    if len(json_text) > 5_000_000:
+        return False, "Backup file is too large."
+    if not isinstance(payload.get("portfolios", []), list) \
+            or not isinstance(payload.get("profile", {}), dict) \
+            or not isinstance(payload.get("mf_store", {}), dict):
+        return False, "Backup file has an unexpected structure."
 
     restored = []
-    if "portfolios" in payload:
-        save_portfolios(payload["portfolios"]); restored.append("portfolios")
-    if "profile" in payload:
-        save_finance_profile(payload["profile"]); restored.append("wealth/budget profile")
-    if "mf_store" in payload:
-        save_mf_store(payload["mf_store"]); restored.append("mutual funds")
+    if "portfolios" in payload and save_portfolios(payload["portfolios"]):
+        restored.append("portfolios")
+    if "profile" in payload and save_finance_profile(payload["profile"]):
+        restored.append("wealth/budget profile")
+    if "mf_store" in payload and save_mf_store(payload["mf_store"]):
+        restored.append("mutual funds")
 
     if not restored:
         return False, "Backup file was valid but contained no recognizable data."

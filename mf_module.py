@@ -15,6 +15,15 @@ _VERSION = "v6-clean-errors"  # update check: if this prints, correct file is lo
 import streamlit as st
 import json, os, re, io, datetime, tempfile
 import requests
+import html as _html
+import logging
+
+_log = logging.getLogger("equitex.mf")
+
+
+def esc(v):
+    """HTML-escape user/PDF-derived text before it goes into unsafe_allow_html markup."""
+    return _html.escape("" if v is None else str(v), quote=True)
 
 # ── Constants ─────────────────────────────────────────────────
 MFAPI_SEARCH = "https://api.mfapi.in/mf/search?q={}"
@@ -388,8 +397,8 @@ def parse_mf_excel(file_bytes: bytes) -> dict:
     except ImportError:
         return {"ok":False,"errors":["openpyxl not installed: pip install openpyxl"]}
     except Exception as e:
-        import traceback
-        return {"ok":False,"errors":[f"Excel error: {e} | {traceback.format_exc().splitlines()[-1]}"]}
+        _log.error("Excel parse failed", exc_info=True)
+        return {"ok":False,"errors":["Couldn't read that Excel file. Check it matches the template and try again."]}
 
 def parse_cas_pdf(file_bytes: bytes, password: str = "") -> dict:
     """
@@ -864,14 +873,20 @@ def sync_to_finance(store: dict):
         "nav":         f.get("latest_nav", 0),
         "nav_date":    f.get("nav_date", ""),
     } for f in funds]
-    fa_p = st.session_state.get("fa_profile", {})
-    fa_p["mf_list"] = fa_list
-    st.session_state.fa_profile = fa_p
     try:
-        from finance_advisor import fa_save
+        from finance_advisor import fa_load, fa_save
+        # Load what's stored FIRST. Without this, opening Mutual Funds before the
+        # Wealth tab built a profile containing only mf_list and saved it over
+        # the user's real budget/assets/goals.
+        fa_load()
+        if not st.session_state.get("fa_hydrated"):
+            return                      # couldn't confirm stored data → don't write
+        fa_p = st.session_state.get("fa_profile", {})
+        fa_p["mf_list"] = fa_list
+        st.session_state.fa_profile = fa_p
         fa_save()
     except Exception:
-        pass
+        _log.warning("MF → Finance sync skipped", exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -905,12 +920,12 @@ def fund_row_html(f, show_account=False):
     acc_badge = ""
     if show_account and f.get("_account_name"):
         acc_badge = (f'<span class="mf-acc-badge" style="margin-left:8px;">'
-                     f'{f.get("_relation","")} · {f["_account_name"]}</span>')
+                     f'{esc(f.get("_relation",""))} · {esc(f["_account_name"])}</span>')
     return (
         f'<div class="mf-row">'
         f'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:5px;">'
         f'<div><span style="font-size:12px;font-weight:700;color:var(--text-primary);">'
-        f'{linked} {f.get("name","")[:52]}</span>{acc_badge}</div>'
+        f'{linked} {esc(str(f.get("name",""))[:52])}</span>{acc_badge}</div>'
         f'<div style="text-align:right;">'
         f'<div style="font-size:13px;font-weight:700;color:{gc};">{ar:+.2f}%</div>'
         f'<div style="font-size:10px;color:var(--text-muted);">{fmt(gain)}</div></div></div>'
@@ -1060,7 +1075,7 @@ def page_mf_portfolio():
                             st.markdown(
                                 f'<div style="background:var(--bg-secondary);border:1px solid var(--accent-blue);'
                                 f'border-radius:8px;padding:14px 16px;margin:-4px 0 10px 0;">'
-                                f'<b style="font-size:12px;">Edit — {fund_name[:55]}</b></div>',
+                                f'<b style="font-size:12px;">Edit — {esc(fund_name[:55])}</b></div>',
                                 unsafe_allow_html=True
                             )
                             ea, eb, ec = st.columns(3)
@@ -1138,7 +1153,7 @@ def page_mf_portfolio():
                         st.markdown(
                             f'<div style="font-size:11px;font-weight:600;color:var(--text-primary);'
                             f'padding-top:8px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'
-                            f'{fund_name[:38]}</div>',
+                            f'{esc(fund_name[:38])}</div>',
                             unsafe_allow_html=True
                         )
                     with sc2:
@@ -1188,8 +1203,8 @@ def page_mf_portfolio():
                     gc2 = color_ret(ar2)
                     with acc_cols[i % 3]:
                         st.markdown(f"""<div class="mf-card">
-                          <div class="mf-hdr">{acc.get("relation","")}</div>
-                          <div style="font-size:14px;font-weight:700;color:var(--text-primary);">{acc.get("name","")}</div>
+                          <div class="mf-hdr">{esc(acc.get("relation",""))}</div>
+                          <div style="font-size:14px;font-weight:700;color:var(--text-primary);">{esc(acc.get("name",""))}</div>
                           <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
                             PAN: {mask_pan(acc.get("pan"))} · {len(af)} funds</div>
                           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;">
@@ -1220,7 +1235,7 @@ def page_mf_portfolio():
                     st.markdown(f"""<div class="mf-row">
                       <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
                         <span style="font-size:13px;font-weight:700;color:var(--text-primary);">
-                          {acc.get("relation","")} — {acc.get("name","")}</span>
+                          {esc(acc.get("relation",""))} — {esc(acc.get("name",""))}</span>
                         <span class="mf-tag" style="background:var(--bg-card);
                           color:var(--accent-blue);border:1px solid var(--border);">{src}</span>
                       </div>
@@ -1415,9 +1430,8 @@ def page_mf_portfolio():
                             st.rerun()
 
                     except Exception as _e:
-                        import traceback
-                        st.error(f"❌ Error: {_e}")
-                        st.code(traceback.format_exc())
+                        _log.error("MF import failed", exc_info=True)
+                        st.error("❌ Something went wrong while importing. Please check the file and try again.")
 
             with col2:
                 if st.button("✕ Discard", key="discard_cas"):

@@ -130,48 +130,61 @@ def month_options(n=12):
         if m == 0: m = 12; y -= 1
     return result
 
+def esc(v):
+    """HTML-escape any user-supplied value before it goes into unsafe_allow_html markup."""
+    return _html.escape("" if v is None else str(v), quote=True)
+
 # ─── Owner tag HTML ───────────────────────────────────────────────
 def owner_tag_html(owner, self_name="Self", spouse_name="Spouse"):
     label = {"self": self_name, "spouse": spouse_name, "joint": "Joint"}.get(owner, owner)
     c = OWNER_COLORS.get(owner, OWNER_COLORS["joint"])
     return (f'<span style="font-size:10px;font-weight:600;padding:2px 9px;border-radius:20px;'
-            f'background:{c["bg"]};color:{c["text"]};border:1px solid {c["border"]};">{label}</span>')
+            f'background:{c["bg"]};color:{c["text"]};border:1px solid {c["border"]};">{esc(label)}</span>')
 
 def owner_badge_html(owner_label, oc):
     """Minimal single-line badge — deliberately simple/isolated to avoid
     the fragility of embedding it inside a larger multi-line HTML block."""
-    return f'<span style="font-size:9px;font-weight:600;padding:2px 7px;border-radius:20px;background:{oc["bg"]};color:{oc["text"]};border:1px solid {oc["border"]};">{owner_label}</span>'
+    return f'<span style="font-size:9px;font-weight:600;padding:2px 7px;border-radius:20px;background:{oc["bg"]};color:{oc["text"]};border:1px solid {oc["border"]};">{esc(owner_label)}</span>'
 
 # ═══════════════════════════════════════════════════════════════════
-# PERSISTENCE — routed through equitex_store (per-browser, cookie-keyed).
-# Previously used a fixed shared file here; removed after discovering
-# it caused wealth/income data to be visible across all visitors.
+# PERSISTENCE — routed through equitex_store (per-account, Supabase + RLS).
+#
+# Safety rule: we NEVER write the profile until we know what is already
+# stored. Otherwise a module that touches the profile first (e.g. the
+# Mutual Fund sync) could replace the saved budget/assets/goals with a
+# nearly-empty dict.
 # ═══════════════════════════════════════════════════════════════════
 def fa_save():
-    """Save the wealth profile using the same per-browser cookie-keyed
-    storage as everything else in the app. This used to write to a
-    single fixed file (equitex_profile.json) shared by EVERY visitor —
-    a serious bug where one person's income/wealth data could be seen
-    and overwritten by anyone else using the app."""
     profile = st.session_state.get("fa_profile", {})
     if not profile: return
-    from equitex_store import save_finance_profile
+    from equitex_store import save_finance_profile, get_finance_profile, load_failed
     try:
+        if not st.session_state.get("fa_hydrated"):
+            stored = get_finance_profile()
+            if load_failed("profiles"):
+                st.warning("⚠️ Couldn't confirm your saved data, so this change was not saved. Please refresh.")
+                return
+            if isinstance(stored, dict) and stored:
+                profile = {**stored, **profile}      # keep stored keys, session wins on conflict
+                st.session_state.fa_profile = profile
+            st.session_state.fa_hydrated = True
         save_finance_profile(profile)
-        st.session_state["fa_last_saved"] = _os.times()  # just a monotonic marker, not a shared path
-    except Exception as e:
-        st.warning(f"⚠️ Could not save: {e}")
+    except Exception:
+        st.warning("⚠️ Could not save. Use Download Backup on the Dashboard as a safeguard.")
 
 def fa_load():
     if st.session_state.get("fa_loaded"): return
-    from equitex_store import get_finance_profile
+    from equitex_store import get_finance_profile, load_failed
     try:
         profile = get_finance_profile()
+        if load_failed("profiles"):
+            return                                    # don't mark as hydrated
+        st.session_state.fa_hydrated = True          # we now know what's stored (even if empty)
         if isinstance(profile, dict) and profile.get("self_name"):
             st.session_state.fa_profile = profile
             st.session_state.fa_loaded  = True
-    except Exception as e:
-        st.warning(f"⚠️ Could not load profile: {e}")
+    except Exception:
+        st.warning("⚠️ Could not load your profile. Please refresh.")
 
 def get_profile():
     return st.session_state.get("fa_profile", {})
@@ -369,45 +382,44 @@ def render_add_entry_form(section_key, mk, label_options=None, label_prefix=""):
         return False
 
     with st.container():
-        st.markdown('<div style="background:var(--bg-secondary);border:1px dashed var(--border-bright);border-radius:8px;padding:14px;margin-top:6px;">', unsafe_allow_html=True)
-        fc1, fc2 = st.columns([3,2])
-        with fc1:
-            if label_options:
-                preset = st.selectbox("Preset or type custom →", ["— Custom —"] + [f"{i} {n}" for i,n in label_options], key=f"preset_{form_key}")
-                if preset == "— Custom —":
-                    entry_label = st.text_input("Label", key=f"lbl_{form_key}", placeholder="e.g. Club membership")
+        with st.container(border=True):
+            fc1, fc2 = st.columns([3,2])
+            with fc1:
+                if label_options:
+                    preset = st.selectbox("Preset or type custom →", ["— Custom —"] + [f"{i} {n}" for i,n in label_options], key=f"preset_{form_key}")
+                    if preset == "— Custom —":
+                        entry_label = st.text_input("Label", key=f"lbl_{form_key}", placeholder="e.g. Club membership")
+                    else:
+                        entry_label = preset.split(" ",1)[1] if " " in preset else preset
+                        st.caption(f"Selected: **{entry_label}**")
                 else:
-                    entry_label = preset.split(" ",1)[1] if " " in preset else preset
-                    st.caption(f"Selected: **{entry_label}**")
-            else:
-                entry_label = st.text_input("Label", key=f"lbl_{form_key}", placeholder="Describe this entry")
-        with fc2:
-            entry_amt = st.number_input("Amount (₹)", min_value=0, max_value=10000000, value=0, step=500, key=f"amt_{form_key}")
+                    entry_label = st.text_input("Label", key=f"lbl_{form_key}", placeholder="Describe this entry")
+            with fc2:
+                entry_amt = st.number_input("Amount (₹)", min_value=0, max_value=10000000, value=0, step=500, key=f"amt_{form_key}")
 
-        OWNER_OPTS = {self_name: "self"}
-        if has_spouse: OWNER_OPTS[spouse_name] = "spouse"
-        OWNER_OPTS["Joint / Shared"] = "joint"
-        owner_display = st.radio("Paid by / Belongs to", list(OWNER_OPTS.keys()),
-                                  horizontal=True, key=f"owner_{form_key}")
-        owner_val = OWNER_OPTS[owner_display]
+            OWNER_OPTS = {self_name: "self"}
+            if has_spouse: OWNER_OPTS[spouse_name] = "spouse"
+            OWNER_OPTS["Joint / Shared"] = "joint"
+            owner_display = st.radio("Paid by / Belongs to", list(OWNER_OPTS.keys()),
+                                      horizontal=True, key=f"owner_{form_key}")
+            owner_val = OWNER_OPTS[owner_display]
 
-        sa, sb, _ = st.columns([1,1,4])
-        saved = False
-        with sa:
-            if st.button("✅ Save", key=f"save_{form_key}", type="primary", width='stretch'):
-                if entry_label and entry_amt > 0:
-                    budget = get_month_budget(mk)
-                    budget.setdefault(section_key, [])
-                    budget[section_key].append({"label": entry_label, "amount": int(entry_amt), "owner": owner_val})
-                    save_month_budget(mk, budget)
+            sa, sb, _ = st.columns([1,1,4])
+            saved = False
+            with sa:
+                if st.button("✅ Save", key=f"save_{form_key}", type="primary", width='stretch'):
+                    if entry_label and entry_amt > 0:
+                        budget = get_month_budget(mk)
+                        budget.setdefault(section_key, [])
+                        budget[section_key].append({"label": entry_label, "amount": int(entry_amt), "owner": owner_val})
+                        save_month_budget(mk, budget)
+                        st.session_state[f"show_{form_key}"] = False
+                        saved = True
+                        st.rerun()
+            with sb:
+                if st.button("✕ Cancel", key=f"cancel_{form_key}", width='stretch'):
                     st.session_state[f"show_{form_key}"] = False
-                    saved = True
                     st.rerun()
-        with sb:
-            if st.button("✕ Cancel", key=f"cancel_{form_key}", width='stretch'):
-                st.session_state[f"show_{form_key}"] = False
-                st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
     return saved
 
 
@@ -436,7 +448,7 @@ def render_entry_list(section_key, mk, entries, icon_map, amount_color, self_nam
                 background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
                 <div style="width:26px;height:26px;border-radius:6px;background:{icon_bg};
                     display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;">💰</div>
-                <div style="flex:1;font-size:13px;color:var(--text-primary);">{label}</div>
+                <div style="flex:1;font-size:13px;color:var(--text-primary);">{esc(label)}</div>
                 {tag}
                 <div style="font-size:14px;font-weight:600;color:{amount_color};min-width:80px;text-align:right;">{amt_str}</div>
             </div>""", unsafe_allow_html=True)
@@ -561,13 +573,13 @@ def render_budget_section():
         st.markdown(f"""<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px;">
             <div style="background:{oc['self']['bg']};border:1px solid {oc['self']['border']};
                 border-radius:8px;padding:12px 14px;">
-                <div style="font-size:11px;color:{oc['self']['text']};font-weight:600;margin-bottom:4px;">{self_name}</div>
+                <div style="font-size:11px;color:{oc['self']['text']};font-weight:600;margin-bottom:4px;">{esc(self_name)}</div>
                 <div style="font-size:18px;font-weight:700;color:{oc['self']['text']};">{fmt(self_total)}</div>
                 <div style="font-size:10px;color:{oc['self']['text']};opacity:0.7;">Personal entries</div>
             </div>
             <div style="background:{oc['spouse']['bg']};border:1px solid {oc['spouse']['border']};
                 border-radius:8px;padding:12px 14px;">
-                <div style="font-size:11px;color:{oc['spouse']['text']};font-weight:600;margin-bottom:4px;">{spouse_name}</div>
+                <div style="font-size:11px;color:{oc['spouse']['text']};font-weight:600;margin-bottom:4px;">{esc(spouse_name)}</div>
                 <div style="font-size:18px;font-weight:700;color:{oc['spouse']['text']};">{fmt(spouse_total)}</div>
                 <div style="font-size:10px;color:{oc['spouse']['text']};opacity:0.7;">Personal entries</div>
             </div>
@@ -594,9 +606,9 @@ def render_budget_section():
             sp_inc_total   = sum(e["amount"] for e in income_e if e.get("owner")=="spouse")
             ic1, ic2 = st.columns(2)
             with ic1:
-                st.markdown(f'<div style="font-size:12px;color:var(--text-secondary);">{self_name} earns: <b style="color:var(--accent-green);">{fmt(self_inc_total)}/mo</b></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="font-size:12px;color:var(--text-secondary);">{esc(self_name)} earns: <b style="color:var(--accent-green);">{fmt(self_inc_total)}/mo</b></div>', unsafe_allow_html=True)
             with ic2:
-                st.markdown(f'<div style="font-size:12px;color:var(--text-secondary);">{spouse_name} earns: <b style="color:var(--accent-green);">{fmt(sp_inc_total)}/mo</b></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="font-size:12px;color:var(--text-secondary);">{esc(spouse_name)} earns: <b style="color:var(--accent-green);">{fmt(sp_inc_total)}/mo</b></div>', unsafe_allow_html=True)
 
     with t2:
         st.markdown('<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Rent, EMIs, insurance, school fees — recurring fixed monthly outflows.</div>', unsafe_allow_html=True)
@@ -686,14 +698,14 @@ def render_assets_section():
     with vc2:
         c = OWNER_COLORS["self"]
         st.markdown(f"""<div style="background:{c['bg']};border:1px solid {c['border']};border-radius:8px;padding:13px 15px;margin-bottom:12px;">
-            <div style="font-size:10px;color:{c['text']};font-weight:600;">{self_name}</div>
+            <div style="font-size:10px;color:{c['text']};font-weight:600;">{esc(self_name)}</div>
             <div style="font-size:20px;font-weight:700;color:{c['text']};">{fmt(self_val)}</div>
         </div>""", unsafe_allow_html=True)
     if has_spouse:
         with vc3:
             c = OWNER_COLORS["spouse"]
             st.markdown(f"""<div style="background:{c['bg']};border:1px solid {c['border']};border-radius:8px;padding:13px 15px;margin-bottom:12px;">
-                <div style="font-size:10px;color:{c['text']};font-weight:600;">{spouse_name}</div>
+                <div style="font-size:10px;color:{c['text']};font-weight:600;">{esc(spouse_name)}</div>
                 <div style="font-size:20px;font-weight:700;color:{c['text']};">{fmt(sp_val)}</div>
             </div>""", unsafe_allow_html=True)
     with vc4:
@@ -704,18 +716,17 @@ def render_assets_section():
         </div>""", unsafe_allow_html=True)
 
     # ── Asset list ─────────────────────────────────────────────
-    st.markdown('<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:hidden;">', unsafe_allow_html=True)
-    # Header
-    st.markdown("""<div style="display:flex;padding:8px 14px;background:var(--bg-secondary);
-        border-bottom:1px solid var(--border);font-size:10px;font-weight:600;
-        color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;gap:10px;">
-        <div style="flex:2;">Asset</div><div style="flex:1;">Type</div>
-        <div style="width:80px;">Owner</div>
-        <div style="width:110px;text-align:right;">Invested</div>
-        <div style="width:110px;text-align:right;">Current Value</div>
-        <div style="width:80px;text-align:right;">P&L</div>
-    </div>""", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        # Header
+        st.markdown("""<div style="display:flex;padding:8px 14px;background:var(--bg-secondary);
+            border-bottom:1px solid var(--border);font-size:10px;font-weight:600;
+            color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;gap:10px;">
+            <div style="flex:2;">Asset</div><div style="flex:1;">Type</div>
+            <div style="width:80px;">Owner</div>
+            <div style="width:110px;text-align:right;">Invested</div>
+            <div style="width:110px;text-align:right;">Current Value</div>
+            <div style="width:80px;text-align:right;">P&L</div>
+        </div>""", unsafe_allow_html=True)
 
     for i, a in enumerate(all_display):
         val  = _flt(a.get("value",0))
@@ -732,38 +743,37 @@ def render_assets_section():
         if not is_legacy and st.session_state.get(edit_key):
             # ── Inline edit form, pre-filled with current values ──
             with st.container():
-                st.markdown('<div style="background:var(--bg-card);border:1px solid var(--accent-gold);border-radius:6px;padding:12px 14px;margin-bottom:4px;">', unsafe_allow_html=True)
-                ec1,ec2,ec3 = st.columns(3)
-                with ec1: e_name = st.text_input("Asset name", value=a.get("name",""), key=f"e_name_{real_idx}")
-                with ec2: e_type = st.selectbox("Type", ASSET_TYPES, index=ASSET_TYPES.index(a.get("type", ASSET_TYPES[0])) if a.get("type") in ASSET_TYPES else 0, key=f"e_type_{real_idx}")
-                with ec3: e_val  = st.number_input("Current Value (₹)", 0, 1000000000, int(val), 10000, key=f"e_val_{real_idx}")
-                ec4,ec5,ec6 = st.columns(3)
-                with ec4: e_inv  = st.number_input("Amount Invested (₹)", 0, 1000000000, int(inv), 10000, key=f"e_inv_{real_idx}")
-                with ec5: e_mo   = st.number_input("Monthly Addition (₹)", 0, 1000000, int(_flt(a.get("monthly",0))), 500, key=f"e_mo_{real_idx}")
-                with ec6:
-                    OWNER_OPTS_E = {self_name: "self"}
-                    if has_spouse: OWNER_OPTS_E[spouse_name] = "spouse"
-                    OWNER_OPTS_E["Joint"] = "joint"
-                    owner_labels = list(OWNER_OPTS_E.keys())
-                    cur_lbl = {"self": self_name, "spouse": spouse_name, "joint": "Joint"}.get(owner, self_name)
-                    e_owner_lbl = st.selectbox("Belongs to", owner_labels,
-                                                index=owner_labels.index(cur_lbl) if cur_lbl in owner_labels else 0,
-                                                key=f"e_owner_{real_idx}")
-                sc1, sc2, _ = st.columns([1,1,4])
-                with sc1:
-                    if st.button("💾 Save", key=f"save_asset_{real_idx}", type="primary"):
-                        assets[real_idx] = {"name": e_name, "type": e_type, "value": e_val,
-                                             "invested": e_inv, "monthly": e_mo,
-                                             "owner": OWNER_OPTS_E[e_owner_lbl]}
-                        save_assets(assets)
-                        st.session_state[edit_key] = False
-                        st.success(f"✅ Updated {e_name}")
-                        st.rerun()
-                with sc2:
-                    if st.button("✕ Cancel", key=f"cancel_asset_{real_idx}"):
-                        st.session_state[edit_key] = False
-                        st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
+                with st.container(border=True):
+                    ec1,ec2,ec3 = st.columns(3)
+                    with ec1: e_name = st.text_input("Asset name", value=a.get("name",""), key=f"e_name_{real_idx}")
+                    with ec2: e_type = st.selectbox("Type", ASSET_TYPES, index=ASSET_TYPES.index(a.get("type", ASSET_TYPES[0])) if a.get("type") in ASSET_TYPES else 0, key=f"e_type_{real_idx}")
+                    with ec3: e_val  = st.number_input("Current Value (₹)", 0, 1000000000, int(val), 10000, key=f"e_val_{real_idx}")
+                    ec4,ec5,ec6 = st.columns(3)
+                    with ec4: e_inv  = st.number_input("Amount Invested (₹)", 0, 1000000000, int(inv), 10000, key=f"e_inv_{real_idx}")
+                    with ec5: e_mo   = st.number_input("Monthly Addition (₹)", 0, 1000000, int(_flt(a.get("monthly",0))), 500, key=f"e_mo_{real_idx}")
+                    with ec6:
+                        OWNER_OPTS_E = {self_name: "self"}
+                        if has_spouse: OWNER_OPTS_E[spouse_name] = "spouse"
+                        OWNER_OPTS_E["Joint"] = "joint"
+                        owner_labels = list(OWNER_OPTS_E.keys())
+                        cur_lbl = {"self": self_name, "spouse": spouse_name, "joint": "Joint"}.get(owner, self_name)
+                        e_owner_lbl = st.selectbox("Belongs to", owner_labels,
+                                                    index=owner_labels.index(cur_lbl) if cur_lbl in owner_labels else 0,
+                                                    key=f"e_owner_{real_idx}")
+                    sc1, sc2, _ = st.columns([1,1,4])
+                    with sc1:
+                        if st.button("💾 Save", key=f"save_asset_{real_idx}", type="primary"):
+                            assets[real_idx] = {"name": e_name, "type": e_type, "value": e_val,
+                                                 "invested": e_inv, "monthly": e_mo,
+                                                 "owner": OWNER_OPTS_E[e_owner_lbl]}
+                            save_assets(assets)
+                            st.session_state[edit_key] = False
+                            st.success(f"✅ Updated {e_name}")
+                            st.rerun()
+                    with sc2:
+                        if st.button("✕ Cancel", key=f"cancel_asset_{real_idx}"):
+                            st.session_state[edit_key] = False
+                            st.rerun()
             continue
 
         rc1, rc2, rc3, rc4, rc5, rc_edit, rc_del = st.columns([2.2,1.2,0.9,1.1,1.1,0.5,0.5])
@@ -896,33 +906,32 @@ def render_wealth_holdings_section():
             gval = _flt(g.get("grams",0)) * max(1,_flt(g.get("rate",7500)))
             if st.session_state.get(ek):
                 with st.container():
-                    st.markdown('<div style="background:var(--bg-card);border:1px solid var(--accent-gold);border-radius:6px;padding:12px 14px;margin-bottom:4px;">', unsafe_allow_html=True)
-                    ec1,ec2,ec3 = st.columns(3)
-                    with ec1: e_type = st.selectbox("Type", ["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"],
-                                                     index=["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"].index(g.get("type","Physical Jewellery")) if g.get("type") in ["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"] else 0,
-                                                     key=f"wh_ge_type_{i}")
-                    with ec2: e_grams = st.number_input("Grams", 0.0, 100000.0, float(g.get("grams",0)), 1.0, key=f"wh_ge_grams_{i}")
-                    with ec3: e_rate = st.number_input("Rate per gram (₹)", 0, 100000, int(_flt(g.get("rate",7500))), 100, key=f"wh_ge_rate_{i}")
-                    ec4,ec5 = st.columns(2)
-                    with ec4: e_inv = st.number_input("Amount Invested (₹)", 0, 100000000, int(_flt(g.get("invested",0))), 1000, key=f"wh_ge_inv_{i}")
-                    with ec5:
-                        cur_lbl = {v:k for k,v in OWNER_BASE.items()}.get(g.get("owner","self"), self_name)
-                        e_owner_lbl = st.selectbox("Belongs to", list(OWNER_BASE.keys()),
-                                                    index=list(OWNER_BASE.keys()).index(cur_lbl) if cur_lbl in OWNER_BASE else 0,
-                                                    key=f"wh_ge_owner_{i}")
-                    sv1,sv2,_ = st.columns([1,1,4])
-                    with sv1:
-                        if st.button("💾 Save", key=f"wh_gsave_{i}", type="primary"):
-                            gold_list[i] = {"type":e_type,"grams":e_grams,"rate":e_rate,"invested":e_inv,
-                                             "owner":OWNER_BASE[e_owner_lbl],"sgb_units":g.get("sgb_units",0),"sgb_issue_price":g.get("sgb_issue_price",0)}
-                            p["gold_list"] = gold_list
-                            st.session_state.fa_profile = p; fa_save()
-                            st.session_state[ek] = False
-                            st.success("✅ Updated"); st.rerun()
-                    with sv2:
-                        if st.button("✕ Cancel", key=f"wh_gcancel_{i}"):
-                            st.session_state[ek] = False; st.rerun()
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    with st.container(border=True):
+                        ec1,ec2,ec3 = st.columns(3)
+                        with ec1: e_type = st.selectbox("Type", ["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"],
+                                                         index=["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"].index(g.get("type","Physical Jewellery")) if g.get("type") in ["Physical Jewellery","Coins/Bars","Digital Gold","SGB (Sovereign Gold Bond)"] else 0,
+                                                         key=f"wh_ge_type_{i}")
+                        with ec2: e_grams = st.number_input("Grams", 0.0, 100000.0, float(g.get("grams",0)), 1.0, key=f"wh_ge_grams_{i}")
+                        with ec3: e_rate = st.number_input("Rate per gram (₹)", 0, 100000, int(_flt(g.get("rate",7500))), 100, key=f"wh_ge_rate_{i}")
+                        ec4,ec5 = st.columns(2)
+                        with ec4: e_inv = st.number_input("Amount Invested (₹)", 0, 100000000, int(_flt(g.get("invested",0))), 1000, key=f"wh_ge_inv_{i}")
+                        with ec5:
+                            cur_lbl = {v:k for k,v in OWNER_BASE.items()}.get(g.get("owner","self"), self_name)
+                            e_owner_lbl = st.selectbox("Belongs to", list(OWNER_BASE.keys()),
+                                                        index=list(OWNER_BASE.keys()).index(cur_lbl) if cur_lbl in OWNER_BASE else 0,
+                                                        key=f"wh_ge_owner_{i}")
+                        sv1,sv2,_ = st.columns([1,1,4])
+                        with sv1:
+                            if st.button("💾 Save", key=f"wh_gsave_{i}", type="primary"):
+                                gold_list[i] = {"type":e_type,"grams":e_grams,"rate":e_rate,"invested":e_inv,
+                                                 "owner":OWNER_BASE[e_owner_lbl],"sgb_units":g.get("sgb_units",0),"sgb_issue_price":g.get("sgb_issue_price",0)}
+                                p["gold_list"] = gold_list
+                                st.session_state.fa_profile = p; fa_save()
+                                st.session_state[ek] = False
+                                st.success("✅ Updated"); st.rerun()
+                        with sv2:
+                            if st.button("✕ Cancel", key=f"wh_gcancel_{i}"):
+                                st.session_state[ek] = False; st.rerun()
             else:
                 r1, r2, r3 = st.columns([6,1,1])
                 with r1:
@@ -959,24 +968,23 @@ def render_wealth_holdings_section():
             ek = f"wh_edit_fd_{i}"
             if st.session_state.get(ek):
                 with st.container():
-                    st.markdown('<div style="background:var(--bg-card);border:1px solid var(--accent-gold);border-radius:6px;padding:12px 14px;margin-bottom:4px;">', unsafe_allow_html=True)
-                    ec1,ec2,ec3,ec4 = st.columns(4)
-                    with ec1: e_bank = st.text_input("Bank", value=f.get("bank",""), key=f"wh_fe_bank_{i}")
-                    with ec2: e_amt  = st.number_input("Amount (₹)", 0, 100000000, int(_flt(f.get("amount",0))), 10000, key=f"wh_fe_amt_{i}")
-                    with ec3: e_rate = st.number_input("Interest Rate (%)", 0.0, 20.0, float(f.get("rate",7.0)), 0.1, key=f"wh_fe_rate_{i}")
-                    with ec4: e_mo   = st.number_input("Tenure (months)", 0, 360, int(f.get("months",12)), 1, key=f"wh_fe_mo_{i}")
-                    sv1,sv2,_ = st.columns([1,1,4])
-                    with sv1:
-                        if st.button("💾 Save", key=f"wh_fsave_{i}", type="primary"):
-                            fd_list[i] = {"bank":e_bank,"type":"FD","amount":e_amt,"rate":e_rate,"months":e_mo}
-                            p["fd_list"] = fd_list
-                            st.session_state.fa_profile = p; fa_save()
-                            st.session_state[ek] = False
-                            st.success("✅ Updated"); st.rerun()
-                    with sv2:
-                        if st.button("✕ Cancel", key=f"wh_fcancel_{i}"):
-                            st.session_state[ek] = False; st.rerun()
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    with st.container(border=True):
+                        ec1,ec2,ec3,ec4 = st.columns(4)
+                        with ec1: e_bank = st.text_input("Bank", value=f.get("bank",""), key=f"wh_fe_bank_{i}")
+                        with ec2: e_amt  = st.number_input("Amount (₹)", 0, 100000000, int(_flt(f.get("amount",0))), 10000, key=f"wh_fe_amt_{i}")
+                        with ec3: e_rate = st.number_input("Interest Rate (%)", 0.0, 20.0, float(f.get("rate",7.0)), 0.1, key=f"wh_fe_rate_{i}")
+                        with ec4: e_mo   = st.number_input("Tenure (months)", 0, 360, int(f.get("months",12)), 1, key=f"wh_fe_mo_{i}")
+                        sv1,sv2,_ = st.columns([1,1,4])
+                        with sv1:
+                            if st.button("💾 Save", key=f"wh_fsave_{i}", type="primary"):
+                                fd_list[i] = {"bank":e_bank,"type":"FD","amount":e_amt,"rate":e_rate,"months":e_mo}
+                                p["fd_list"] = fd_list
+                                st.session_state.fa_profile = p; fa_save()
+                                st.session_state[ek] = False
+                                st.success("✅ Updated"); st.rerun()
+                        with sv2:
+                            if st.button("✕ Cancel", key=f"wh_fcancel_{i}"):
+                                st.session_state[ek] = False; st.rerun()
             else:
                 r1, r2, r3 = st.columns([6,1,1])
                 with r1:
@@ -1021,38 +1029,37 @@ def render_wealth_holdings_section():
             ek = f"wh_edit_re_{i}"
             if st.session_state.get(ek):
                 with st.container():
-                    st.markdown('<div style="background:var(--bg-card);border:1px solid var(--accent-gold);border-radius:6px;padding:12px 14px;margin-bottom:4px;">', unsafe_allow_html=True)
-                    ec1,ec2 = st.columns(2)
-                    with ec1: e_name = st.text_input("Property Name", value=r.get("name",""), key=f"wh_re_name_{i}")
-                    with ec2:
-                        RE_TYPES = ["Residential","Commercial","Plot/Land","Other"]
-                        e_type = st.selectbox("Type", RE_TYPES,
-                                               index=RE_TYPES.index(r.get("type","Residential")) if r.get("type") in RE_TYPES else 0,
-                                               key=f"wh_re_type_{i}")
-                    ec3,ec4,ec5 = st.columns(3)
-                    with ec3: e_buy  = st.number_input("Purchase Price (₹)", 0, 1000000000, int(_flt(r.get("purchased",0))), 10000, key=f"wh_re_buy_{i}")
-                    with ec4: e_cur  = st.number_input("Current Value (₹)", 0, 1000000000, int(_flt(r.get("current",0))), 10000, key=f"wh_re_cur_{i}")
-                    with ec5: e_rent = st.number_input("Monthly Rent Income (₹)", 0, 1000000, int(_flt(r.get("rent",0))), 500, key=f"wh_re_rent_{i}")
-                    ec6,ec7 = st.columns(2)
-                    with ec6: e_loan = st.number_input("Outstanding Loan (₹)", 0, 1000000000, int(_flt(r.get("loan",0))), 10000, key=f"wh_re_loan_{i}")
-                    with ec7:
-                        cur_lbl = {v:k for k,v in OWNER_BASE.items()}.get(r.get("owner","joint"), "Joint")
-                        e_owner_lbl = st.selectbox("Belongs to", list(OWNER_BASE.keys()),
-                                                    index=list(OWNER_BASE.keys()).index(cur_lbl) if cur_lbl in OWNER_BASE else 0,
-                                                    key=f"wh_re_owner_{i}")
-                    sv1,sv2,_ = st.columns([1,1,4])
-                    with sv1:
-                        if st.button("💾 Save", key=f"wh_resave_{i}", type="primary"):
-                            re_list[i] = {"name":e_name,"type":e_type,"purchased":e_buy,"current":e_cur,
-                                          "rent":e_rent,"loan":e_loan,"owner":OWNER_BASE[e_owner_lbl]}
-                            p["re_list"] = re_list
-                            st.session_state.fa_profile = p; fa_save()
-                            st.session_state[ek] = False
-                            st.success("✅ Updated"); st.rerun()
-                    with sv2:
-                        if st.button("✕ Cancel", key=f"wh_recancel_{i}"):
-                            st.session_state[ek] = False; st.rerun()
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    with st.container(border=True):
+                        ec1,ec2 = st.columns(2)
+                        with ec1: e_name = st.text_input("Property Name", value=r.get("name",""), key=f"wh_re_name_{i}")
+                        with ec2:
+                            RE_TYPES = ["Residential","Commercial","Plot/Land","Other"]
+                            e_type = st.selectbox("Type", RE_TYPES,
+                                                   index=RE_TYPES.index(r.get("type","Residential")) if r.get("type") in RE_TYPES else 0,
+                                                   key=f"wh_re_type_{i}")
+                        ec3,ec4,ec5 = st.columns(3)
+                        with ec3: e_buy  = st.number_input("Purchase Price (₹)", 0, 1000000000, int(_flt(r.get("purchased",0))), 10000, key=f"wh_re_buy_{i}")
+                        with ec4: e_cur  = st.number_input("Current Value (₹)", 0, 1000000000, int(_flt(r.get("current",0))), 10000, key=f"wh_re_cur_{i}")
+                        with ec5: e_rent = st.number_input("Monthly Rent Income (₹)", 0, 1000000, int(_flt(r.get("rent",0))), 500, key=f"wh_re_rent_{i}")
+                        ec6,ec7 = st.columns(2)
+                        with ec6: e_loan = st.number_input("Outstanding Loan (₹)", 0, 1000000000, int(_flt(r.get("loan",0))), 10000, key=f"wh_re_loan_{i}")
+                        with ec7:
+                            cur_lbl = {v:k for k,v in OWNER_BASE.items()}.get(r.get("owner","joint"), "Joint")
+                            e_owner_lbl = st.selectbox("Belongs to", list(OWNER_BASE.keys()),
+                                                        index=list(OWNER_BASE.keys()).index(cur_lbl) if cur_lbl in OWNER_BASE else 0,
+                                                        key=f"wh_re_owner_{i}")
+                        sv1,sv2,_ = st.columns([1,1,4])
+                        with sv1:
+                            if st.button("💾 Save", key=f"wh_resave_{i}", type="primary"):
+                                re_list[i] = {"name":e_name,"type":e_type,"purchased":e_buy,"current":e_cur,
+                                              "rent":e_rent,"loan":e_loan,"owner":OWNER_BASE[e_owner_lbl]}
+                                p["re_list"] = re_list
+                                st.session_state.fa_profile = p; fa_save()
+                                st.session_state[ek] = False
+                                st.success("✅ Updated"); st.rerun()
+                        with sv2:
+                            if st.button("✕ Cancel", key=f"wh_recancel_{i}"):
+                                st.session_state[ek] = False; st.rerun()
             else:
                 r1c, r2c, r3c = st.columns([6,1,1])
                 with r1c:
@@ -1177,7 +1184,7 @@ def render_family_dashboard():
         justify-content:space-between;align-items:center;">
         <div>
             <div style="font-size:20px;font-weight:700;color:var(--text-primary);">
-                {self_name}{"  +  " + spouse_name if has_spouse else ""} — Family Wealth</div>
+                {esc(self_name)}{"  +  " + esc(spouse_name) if has_spouse else ""} — Family Wealth</div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
                 {month_label(mk)} · {len(all_assets)} assets tracked</div>
         </div>
@@ -1223,8 +1230,8 @@ def render_family_dashboard():
                     {"min-width:40px;" if joint_pct>8 else ""}">{joint_pct if joint_pct>5 else ""}{"%" if joint_pct>5 else ""}</div>
             </div>
             <div style="display:flex;gap:16px;font-size:11px;margin-bottom:16px;">
-                <span style="color:{oc['self']['text']};"><span style="width:10px;height:10px;border-radius:2px;background:{oc['self']['text']};display:inline-block;margin-right:4px;"></span>{self_name}: {fmt(self_nw)}</span>
-                {"<span style='color:" + oc['spouse']['text'] + ";'><span style='width:10px;height:10px;border-radius:2px;background:" + oc['spouse']['text'] + ";display:inline-block;margin-right:4px;'></span>" + spouse_name + ": " + fmt(spouse_nw) + "</span>" if has_spouse else ""}
+                <span style="color:{oc['self']['text']};"><span style="width:10px;height:10px;border-radius:2px;background:{oc['self']['text']};display:inline-block;margin-right:4px;"></span>{esc(self_name)}: {fmt(self_nw)}</span>
+                {"<span style='color:" + oc['spouse']['text'] + ";'><span style='width:10px;height:10px;border-radius:2px;background:" + oc['spouse']['text'] + ";display:inline-block;margin-right:4px;'></span>" + esc(spouse_name) + ": " + fmt(spouse_nw) + "</span>" if has_spouse else ""}
                 <span style="color:{oc['joint']['text']};"><span style="width:10px;height:10px;border-radius:2px;background:{oc['joint']['text']};display:inline-block;margin-right:4px;"></span>Joint: {fmt(joint_val)}</span>
             </div>"""
             st.markdown(bar_html, unsafe_allow_html=True)
@@ -1296,8 +1303,8 @@ def render_family_dashboard():
                 gc = "var(--accent-green)" if gain>=0 else "var(--accent-red)"
                 st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;
                     background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
-                    <div style="flex:2;font-size:13px;color:var(--text-primary);">{a.get('name','—')}</div>
-                    <div style="flex:1;font-size:11px;color:var(--text-muted);">{a.get('type','—')}</div>
+                    <div style="flex:2;font-size:13px;color:var(--text-primary);">{esc(a.get('name','—'))}</div>
+                    <div style="flex:1;font-size:11px;color:var(--text-muted);">{esc(a.get('type','—'))}</div>
                     <div style="font-size:13px;font-weight:600;color:var(--accent-gold);">{fmt(val)}</div>
                     {"<div style='font-size:11px;color:" + gc + ";margin-left:8px;'>" + fmt(gain) + "</div>" if inv>0 else ""}
                 </div>""", unsafe_allow_html=True)
@@ -1308,8 +1315,8 @@ def render_family_dashboard():
                 val = _flt(a.get("value",0)) / 2
                 st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;
                     background:var(--bg-secondary);border-radius:6px;margin-bottom:4px;">
-                    <div style="flex:2;font-size:13px;color:var(--text-primary);">{a.get('name','—')}</div>
-                    <div style="flex:1;font-size:11px;color:var(--text-muted);">{a.get('type','—')} · Joint</div>
+                    <div style="flex:2;font-size:13px;color:var(--text-primary);">{esc(a.get('name','—'))}</div>
+                    <div style="flex:1;font-size:11px;color:var(--text-muted);">{esc(a.get('type','—'))} · Joint</div>
                     <div style="font-size:13px;font-weight:600;color:var(--accent-cyan);">{fmt(val)}</div>
                 </div>""", unsafe_allow_html=True)
 
@@ -1404,7 +1411,7 @@ def render_liabilities_section():
             with c1:
                 st.markdown(f"""<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;
                     background:var(--bg-card);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
-                    <div style="flex:2;font-size:13px;color:var(--text-primary);">{l.get('name',l.get('type','Loan'))}</div>
+                    <div style="flex:2;font-size:13px;color:var(--text-primary);">{esc(l.get('name',l.get('type','Loan')))}</div>
                     <div style="flex:1;font-size:12px;color:var(--accent-red);font-weight:600;">{fmt(os)}</div>
                     <div style="font-size:11px;color:var(--text-secondary);">{fmt(emi)}/mo · {rate}% · {mos}mo left</div>
                     {tag}
@@ -1452,9 +1459,9 @@ def render_goals_section():
             with gcols[i % 3]:
                 st.markdown(f"""<div style="background:var(--bg-card);border:1px solid var(--border);
                     border-radius:8px;padding:14px 16px;margin-bottom:8px;">
-                    <div style="font-size:12px;font-weight:600;color:var(--text-primary);">{g.get('name','Goal')}</div>
+                    <div style="font-size:12px;font-weight:600;color:var(--text-primary);">{esc(g.get('name','Goal'))}</div>
                     <div style="font-size:10px;color:var(--text-muted);margin:2px 0 8px;">
-                        {g.get('type','—')} · Target: {fmt(target)} · {years}y</div>
+                        {esc(g.get('type','—'))} · Target: {fmt(target)} · {years}y</div>
                     <div style="height:6px;background:var(--border);border-radius:3px;margin-bottom:6px;">
                         <div style="height:6px;width:{pct_done}%;background:{g_color};border-radius:3px;"></div>
                     </div>
@@ -1928,7 +1935,7 @@ def render_overview_section():
         display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
         <div>
             <div style="font-size:22px;font-weight:700;color:var(--text-primary);">
-                {self_name}{"  &  " + spouse_name if has_spouse else ""} — Financial Overview</div>
+                {esc(self_name)}{"  &  " + esc(spouse_name) if has_spouse else ""} — Financial Overview</div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
                 Age {p.get('self_age','—')} · Retire at {p.get('self_retire','—')} · {p.get('self_risk','—')} Risk
                 · {month_label(mk)}</div>
@@ -1954,24 +1961,23 @@ def render_overview_section():
     if all_assets:
         left, right = st.columns(2)
         with left:
-            st.markdown('<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:16px;">', unsafe_allow_html=True)
-            for a in all_assets:
-                val = _flt(a.get("value",0))
-                pct = round(val/total_nw*100,1) if total_nw>0 else 0
-                owner = a.get("owner","self")
-                oc = OWNER_COLORS.get(owner, OWNER_COLORS["self"])
-                owner_label = {"self":self_name,"spouse":spouse_name or "Spouse","joint":"Joint"}.get(owner,owner)
-                st.markdown(f"""<div style="display:flex;align-items:center;padding:7px 0;
-                    border-bottom:1px solid var(--border);">
-                    <div style="flex:2;font-size:12px;color:var(--text-secondary);">{a.get('name','—')}</div>
-                    <div style="flex:1;height:4px;background:var(--border);border-radius:2px;margin:0 8px;">
-                        <div style="width:{pct}%;height:100%;background:var(--accent-blue);border-radius:2px;"></div>
-                    </div>
-                    <span style="font-size:9px;padding:1px 6px;border-radius:10px;
-                        background:{oc['bg']};color:{oc['text']};margin-right:8px;">{owner_label}</span>
-                    <div style="font-size:12px;font-weight:600;color:var(--text-primary);min-width:80px;text-align:right;">{fmt(val)}</div>
-                </div>""", unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+            with st.container(border=True):
+                for a in all_assets:
+                    val = _flt(a.get("value",0))
+                    pct = round(val/total_nw*100,1) if total_nw>0 else 0
+                    owner = a.get("owner","self")
+                    oc = OWNER_COLORS.get(owner, OWNER_COLORS["self"])
+                    owner_label = {"self":self_name,"spouse":spouse_name or "Spouse","joint":"Joint"}.get(owner,owner)
+                    st.markdown(f"""<div style="display:flex;align-items:center;padding:7px 0;
+                        border-bottom:1px solid var(--border);">
+                        <div style="flex:2;font-size:12px;color:var(--text-secondary);">{esc(a.get('name','—'))}</div>
+                        <div style="flex:1;height:4px;background:var(--border);border-radius:2px;margin:0 8px;">
+                            <div style="width:{pct}%;height:100%;background:var(--accent-blue);border-radius:2px;"></div>
+                        </div>
+                        <span style="font-size:9px;padding:1px 6px;border-radius:10px;
+                            background:{oc['bg']};color:{oc['text']};margin-right:8px;">{esc(owner_label)}</span>
+                        <div style="font-size:12px;font-weight:600;color:var(--text-primary);min-width:80px;text-align:right;">{fmt(val)}</div>
+                    </div>""", unsafe_allow_html=True)
         with right:
             # Budget donut for current month
             if total_exp > 0 or total_sav > 0:
@@ -2011,7 +2017,7 @@ def render_overview_section():
                 g_color = "var(--accent-green)" if pct_done>=100 else ("var(--accent-gold)" if pct_done>=50 else "var(--accent-red)")
                 st.markdown(f"""<div style="background:var(--bg-card);border:1px solid var(--border);
                     border-radius:8px;padding:14px 16px;margin-bottom:8px;">
-                    <div style="font-size:12px;font-weight:600;color:var(--text-primary);">{g.get('name','Goal')}</div>
+                    <div style="font-size:12px;font-weight:600;color:var(--text-primary);">{esc(g.get('name','Goal'))}</div>
                     <div style="font-size:10px;color:var(--text-muted);margin:2px 0 8px;">Target: {fmt(target)} · {g.get('years','?')}y</div>
                     <div style="height:5px;background:var(--border);border-radius:3px;margin-bottom:4px;">
                         <div style="height:5px;width:{pct_done}%;background:{g_color};border-radius:3px;"></div>
@@ -2189,6 +2195,7 @@ def render_template_import_inner():
             else:
                 st.session_state.fa_profile          = profile
                 st.session_state.fa_loaded           = True
+                st.session_state.fa_hydrated         = True   # an import replaces what was stored
                 st.session_state.fa_last_import_name = uploaded.name
                 fa_save()
                 st.success(f"✅ Imported {profile.get('self_name','your data')} successfully!")
@@ -2221,8 +2228,8 @@ def page_finance():
         if p.get("self_name"):
             st.markdown(f"""<div style="background:var(--bg-card);border:1px solid var(--accent-green);
                 border-radius:8px;padding:8px 14px;margin-top:12px;font-size:11px;">
-                <span style="color:var(--accent-green);font-weight:600;">✅ {p.get('self_name')}</span>
-                {"  +  <span style='color:var(--accent-gold);font-weight:600;'>" + p.get('spouse_name','') + "</span>" if p.get('include_spouse') and p.get('spouse_name') else ""}
+                <span style="color:var(--accent-green);font-weight:600;">✅ {esc(p.get('self_name'))}</span>
+                {"  +  <span style='color:var(--accent-gold);font-weight:600;'>" + esc(p.get('spouse_name','')) + "</span>" if p.get('include_spouse') and p.get('spouse_name') else ""}
                 <span style="color:var(--text-muted);margin-left:8px;">— full backup available on the Dashboard</span>
             </div>""", unsafe_allow_html=True)
 

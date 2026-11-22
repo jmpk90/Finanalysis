@@ -19,6 +19,7 @@ try:
 except Exception as _fa_err:
     _FA_AVAILABLE = False
     _FA_ERR = str(_fa_err)
+    import logging as _lg; _lg.getLogger("equitex.app").error("finance_advisor import failed", exc_info=True)
 
 try:
     from mf_module import page_mf_portfolio
@@ -26,7 +27,21 @@ try:
 except Exception as _mf_err:
     _MF_AVAILABLE = False
     _MF_ERR = str(_mf_err)
+    import logging as _lg; _lg.getLogger("equitex.app").error("mf_module import failed", exc_info=True)
 warnings.filterwarnings("ignore")
+
+import logging, uuid
+_log = logging.getLogger("equitex.app")
+
+def _report_error(label):
+    """Log the full traceback server-side; show the user only a short message
+    plus a reference ID (never stack traces, file paths or secrets)."""
+    ref = uuid.uuid4().hex[:8]
+    _log.error("[%s] error in %s", ref, label, exc_info=True)
+    st.markdown(
+        f'<div class="danger-block">⚠️ Something went wrong in <b>{label}</b>. '
+        f'Please refresh and try again. <span style="opacity:.7">(ref {ref})</span></div>',
+        unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -815,6 +830,45 @@ NEGATIVE_WORDS = ["loss","decline","fall","crash","weak","miss","downgrade","sel
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
+def _polish_css():
+    """Small consistency layer on top of the theme: bordered containers,
+    forms, buttons, inputs and mobile spacing all share one look."""
+    st.markdown("""<style>
+    /* bordered containers (st.container(border=True)) — replaces the old split <div> wrappers */
+    [data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]) {
+        background: var(--bg-card);
+        border-color: var(--border) !important;
+        border-radius: 10px !important;
+    }
+    /* forms (login / signup) */
+    [data-testid="stForm"] {
+        background: var(--bg-card);
+        border: 1px solid var(--border) !important;
+        border-radius: 12px !important;
+        padding: 18px 18px 14px !important;
+        box-shadow: 0 1px 2px rgba(25,38,35,.05);
+    }
+    /* buttons — consistent radius + subtle motion */
+    .stButton > button, .stDownloadButton > button, [data-testid="stFormSubmitButton"] > button {
+        border-radius: 8px !important;
+        transition: transform .08s ease, box-shadow .15s ease, filter .15s ease;
+    }
+    .stButton > button:hover, [data-testid="stFormSubmitButton"] > button:hover { filter: brightness(.97); }
+    .stButton > button:active, [data-testid="stFormSubmitButton"] > button:active { transform: translateY(1px); }
+    /* keyboard focus is always visible */
+    .stButton > button:focus-visible, input:focus-visible, textarea:focus-visible {
+        outline: 2px solid var(--accent-blue) !important; outline-offset: 1px;
+    }
+    /* never let wide tables / charts push the page sideways */
+    [data-testid="stDataFrame"], .js-plotly-plot { max-width: 100%; }
+    .block-container { max-width: 1280px; }
+    @media (max-width: 640px) {
+        .block-container { padding-left: .8rem !important; padding-right: .8rem !important; }
+        [data-testid="stForm"] { padding: 14px !important; }
+    }
+    </style>""", unsafe_allow_html=True)
+
+
 def safe_get(val, default=None):
     try:
         if val is None or (isinstance(val, float) and np.isnan(val)): return default
@@ -1898,10 +1952,8 @@ def parse_master_template(file_bytes, fname):
         return portfolio, None
 
     except Exception as e:
-        return None, (
-            f"Parse error: {str(e)[:300]}\n\n"
-            f"Traceback:\n{_tb.format_exc()[-500:]}"
-        )
+        _log.error("Broker/portfolio file parse failed", exc_info=True)
+        return None, "Couldn't read that file. Please check it is an unmodified broker export or the EQUITEX template."
 
 
 def _clean_zerodha_symbol(sym):
@@ -2427,7 +2479,7 @@ def render_add_portfolio_modal():
             st.session_state.active_portfolio_idx = len(st.session_state.portfolios) - 1
             st.session_state.show_add_portfolio = False
             for k in ["new_pf_name","new_pf_holder","new_pf_color","new_pf_file"]: st.session_state.pop(k, None)
-            save_portfolios()  # persist to equitex_data.json
+            save_portfolios()  # persist to the logged-in user's Supabase row
             st.success(f"✅ Portfolio '{pf_name}' created with {len(stocks)} stocks!")
             if parse_warning:
                 st.info(f"ℹ️ {parse_warning}")
@@ -3095,19 +3147,18 @@ def render_deep_stock(r):
         headlines = r.get("headlines",[])
         if headlines:
             st.markdown('<div class="sec-hdr" style="margin-top:12px;">LATEST NEWS</div>', unsafe_allow_html=True)
-            st.markdown('<div class="t-card">', unsafe_allow_html=True)
-            for h in headlines[:4]:
-                hl = h.lower()
-                pos_c = sum(1 for w in POSITIVE_WORDS if w in hl)
-                neg_c = sum(1 for w in NEGATIVE_WORDS if w in hl)
-                if pos_c > neg_c: sent_html = '<span class="sent-pos">POSITIVE</span>'
-                elif neg_c > pos_c: sent_html = '<span class="sent-neg">NEGATIVE</span>'
-                else: sent_html = '<span class="sent-neu">NEUTRAL</span>'
-                st.markdown(f"""<div class="news-item">
-                    <div class="news-headline">{h[:120]}</div>
-                    <div class="news-meta">{sent_html}</div>
-                </div>""", unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+            with st.container(border=True):
+                for h in headlines[:4]:
+                    hl = h.lower()
+                    pos_c = sum(1 for w in POSITIVE_WORDS if w in hl)
+                    neg_c = sum(1 for w in NEGATIVE_WORDS if w in hl)
+                    if pos_c > neg_c: sent_html = '<span class="sent-pos">POSITIVE</span>'
+                    elif neg_c > pos_c: sent_html = '<span class="sent-neg">NEGATIVE</span>'
+                    else: sent_html = '<span class="sent-neu">NEUTRAL</span>'
+                    st.markdown(f"""<div class="news-item">
+                        <div class="news-headline">{h[:120]}</div>
+                        <div class="news-meta">{sent_html}</div>
+                    </div>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 # STOCK ANALYZER PAGE
@@ -3559,19 +3610,18 @@ def page_analyzer():
             <div style="font-size:20px;font-weight:700;color:{sent_col};margin-top:8px;">{sent_label.upper()}</div>
             <div class="stat-sub">Based on recent news flow analysis</div>
         </div>""", unsafe_allow_html=True)
-        st.markdown('<div class="t-card">', unsafe_allow_html=True)
-        for h in headlines:
-            hl = h.lower()
-            pc = sum(1 for w in POSITIVE_WORDS if w in hl)
-            nc = sum(1 for w in NEGATIVE_WORDS if w in hl)
-            if pc > nc: st_html = '<span class="sent-pos">POSITIVE</span>'
-            elif nc > pc: st_html = '<span class="sent-neg">NEGATIVE</span>'
-            else: st_html = '<span class="sent-neu">NEUTRAL</span>'
-            st.markdown(f"""<div class="news-item">
-                <div class="news-headline">{h}</div>
-                <div class="news-meta">{st_html}</div>
-            </div>""", unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            for h in headlines:
+                hl = h.lower()
+                pc = sum(1 for w in POSITIVE_WORDS if w in hl)
+                nc = sum(1 for w in NEGATIVE_WORDS if w in hl)
+                if pc > nc: st_html = '<span class="sent-pos">POSITIVE</span>'
+                elif nc > pc: st_html = '<span class="sent-neg">NEGATIVE</span>'
+                else: st_html = '<span class="sent-neu">NEUTRAL</span>'
+                st.markdown(f"""<div class="news-item">
+                    <div class="news-headline">{h}</div>
+                    <div class="news-meta">{st_html}</div>
+                </div>""", unsafe_allow_html=True)
 
     with tab7:
         st.markdown('<div class="sec-hdr">EXPERT ANALYSIS</div>', unsafe_allow_html=True)
@@ -3930,10 +3980,9 @@ def page_portfolio():
             try:
                 page_mf_portfolio()
             except Exception:
-                import traceback
-                st.error(f"MF module error: {traceback.format_exc()[:300]}")
+                _report_error("Mutual Funds")
         else:
-            st.warning(f"MF Portfolio module not loaded: {_MF_ERR}")
+            st.warning("The Mutual Fund module is currently unavailable.")
             st.info("Make sure `mf_module.py` is in the same folder as this file.")
 
     with sub[2]:
@@ -3941,16 +3990,14 @@ def page_portfolio():
         try:
             page_analyzer()
         except Exception:
-            import traceback
-            st.error(f"Analyzer error: {traceback.format_exc()[:300]}")
+            _report_error("Analyzer")
 
     with sub[3]:
         # Compare portfolios
         try:
             page_compare()
         except Exception:
-            import traceback
-            st.error(f"Compare error: {traceback.format_exc()[:300]}")
+            _report_error("Compare")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -4123,7 +4170,7 @@ MUTUAL FUND SUMMARY:
 # ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
-# PORTFOLIO PERSISTENCE — equitex_data.json
+# PORTFOLIO PERSISTENCE — per-user, via equitex_store (Supabase)
 # ─────────────────────────────────────────────
 MAX_PORTFOLIOS = 5
 
@@ -4142,23 +4189,23 @@ def _strip_for_storage(portfolios):
     return safe
 
 def save_portfolios():
-    """Write current portfolios to unified equitex_data.json."""
+    """Write current portfolios to the logged-in user's own row."""
     from equitex_store import save_portfolios as _store_save
     data = _strip_for_storage(st.session_state.get("portfolios", []))
     _store_save(data)
 
 def render_storage_restore():
-    """Load portfolios from unified equitex_data.json on first run."""
+    """Load the logged-in user's portfolios on first run of the session."""
     if st.session_state.get("_restored"):
         return
-    # First run of this session — load from disk
+    # First run of this session — load from the database
     try:
         from equitex_store import get_portfolios
         saved = get_portfolios()
         if saved:
             st.session_state.portfolios = saved[:MAX_PORTFOLIOS]
     except Exception as e:
-        st.warning(f"Could not load portfolios: {e}")
+        st.warning("Could not load your saved portfolios. Please refresh.")
     st.session_state._restored = True
 
 
@@ -4173,6 +4220,7 @@ def main():
             st.session_state[k] = v
 
     inject_theme()
+    _polish_css()
 
     from equitex_store import render_login_gate
     if not render_login_gate():
@@ -4191,9 +4239,7 @@ def main():
             try:
                 fn()
             except Exception:
-                import traceback
-                st.markdown(f'<div class="danger-block">❌ Error in {label}:<br><pre style="font-size:11px;">{traceback.format_exc()[:600]}</pre></div>',
-                            unsafe_allow_html=True)
+                _report_error(label)
 
         if "Dashboard" in page:
             _safe_run(page_dashboard, "Dashboard")
@@ -4205,21 +4251,19 @@ def main():
             if _FA_AVAILABLE:
                 _safe_run(page_wealth, "Wealth")
             else:
-                st.error(f"Finance module could not load: {_FA_ERR}")
+                st.error("The Finance module could not be loaded. Please contact the app owner.")
 
         elif "Budget" in page:
             if _FA_AVAILABLE:
                 _safe_run(page_budget_tab, "Budget")
             else:
-                st.error(f"Finance module could not load: {_FA_ERR}")
+                st.error("The Finance module could not be loaded. Please contact the app owner.")
 
         elif "AI Advisor" in page:
             _safe_run(page_ai_advisor, "AI Advisor")
 
     except Exception:
-        import traceback
-        st.markdown(f'<div class="danger-block">❌ Critical error: {traceback.format_exc()[:400]}</div>',
-                    unsafe_allow_html=True)
+        _report_error("the app")
 
 
 if __name__ == "__main__":

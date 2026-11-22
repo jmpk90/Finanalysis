@@ -358,6 +358,10 @@ def inject_theme():
         border-radius: 6px !important;
     }}
     [data-testid="stAlert"] p {{ color: {tp} !important; }}
+    [data-testid="stAlert"], [data-testid="stAlert"] > div, [data-testid="stAlertContainer"] {{
+        background: {bgcard} !important; border: 1px solid {border} !important; color: {tp} !important;
+    }}
+    [data-testid="stAlert"] *, [data-testid="stAlertContainer"] * {{ color: {tp} !important; }}
     .stSpinner > div {{ border-top-color: {accent} !important; }}
     .stSpinner p {{ color: {ts} !important; }}
 
@@ -950,17 +954,17 @@ def _polish_css():
     [data-testid="stSidebar"] .sb-pos { color:#7FD1A8 !important; font-weight:600; }
     [data-testid="stSidebar"] .sb-neg { color:#F0A3A8 !important; font-weight:600; }
 
-    /* main navigation: vertical list, no radio dots */
-    [data-testid="stSidebar"] .st-key-main_nav [role="radiogroup"] { flex-direction: column; gap: 4px; }
-    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"] {
+    /* sidebar radio lists (menu + portfolios): vertical list items, no radio dots */
+    [data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] { flex-direction: column; gap: 4px; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label[data-baseweb="radio"] {
         width: 100%; margin: 0; padding: 10px 14px; border-radius: 8px; cursor: pointer;
         background: transparent; border: 0; transition: background .15s ease;
     }
-    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"] > div:first-child { display: none; }
-    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"]:hover { background: rgba(255,255,255,.08); }
-    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"]:has(input:checked) { background: rgba(255,255,255,.14); }
-    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"] p { font-size: 14px; font-weight: 500; color: #D5DBE6 !important; }
-    [data-testid="stSidebar"] .st-key-main_nav label[data-baseweb="radio"]:has(input:checked) p { color: #FFFFFF !important; font-weight: 600; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label[data-baseweb="radio"] > div:not(:has([data-testid="stMarkdownContainer"])) { display: none !important; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label[data-baseweb="radio"]:hover { background: rgba(255,255,255,.08); }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) { background: rgba(255,255,255,.14); }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label[data-baseweb="radio"] p { font-size: 14px; font-weight: 500; color: #D5DBE6 !important; }
+    [data-testid="stSidebar"] [data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) p { color: #FFFFFF !important; font-weight: 600; }
 
     /* sidebar buttons */
     [data-testid="stSidebar"] .stButton > button { border-color: rgba(255,255,255,.28) !important; color: #E6EBF2 !important; background: transparent !important; }
@@ -2438,25 +2442,24 @@ def render_navbar():
         st.markdown('<div class="eq-sb-label">My portfolios</div>', unsafe_allow_html=True)
         active_idx = st.session_state.get("active_portfolio_idx", 0)
         if portfolios:
-            pf_names = [pf["name"] for pf in portfolios]
-            safe_idx = min(active_idx, len(pf_names) - 1)
-            selected = st.radio("pf_select", pf_names, index=safe_idx,
-                                label_visibility="collapsed", key="sidebar_pf_radio")
-            new_idx = pf_names.index(selected)
+            _MD_SPECIAL = set("\\`*_{}[]()#+-.!|:~<>$")
+            def _md_safe(t):
+                return "".join("\\" + c if c in _MD_SPECIAL else c for c in str(t))
+
+            def _pf_label(i):
+                pf  = portfolios[i]
+                pv  = pf.get("pnl_pct", 0) or 0
+                tone = "green" if pv >= 0 else "red"
+                pstr = f"+{pv:.1f}%" if pv >= 0 else f"\u2212{abs(pv):.1f}%"
+                return f"{_md_safe(pf['name'][:16])}  \u00b7  {len(pf.get('stocks', []))} stk  \u00b7  :{tone}[{pstr}]"
+
+            safe_idx = min(active_idx, len(portfolios) - 1)
+            new_idx = st.radio("pf_select", list(range(len(portfolios))), index=safe_idx,
+                               format_func=_pf_label, label_visibility="collapsed",
+                               key="sidebar_pf_radio")
             if new_idx != active_idx:
                 st.session_state.active_portfolio_idx = new_idx
                 st.rerun()
-            for i, pf in enumerate(portfolios):
-                c    = pf.get("color", portfolio_color(i))
-                pv   = pf.get("pnl_pct", 0)
-                pstr = f"+{pv:.1f}%" if pv >= 0 else f"\u2212{abs(pv):.1f}%"
-                pcls = "sb-pos" if pv >= 0 else "sb-neg"
-                nstk = len(pf.get("stocks", []))
-                st.markdown(
-                    f'<div class="eq-pf-row"><span class="eq-dot" style="background:{_esc(c)}"></span>'
-                    f'<span style="flex:1">{_esc(pf["name"][:16])}</span>'
-                    f'<span style="font-size:11px">{nstk} stk</span><span class="{pcls}">{pstr}</span></div>',
-                    unsafe_allow_html=True)
         else:
             st.markdown('<div style="font-size:13px;padding:4px;">No portfolios yet. Use Add portfolio to start.</div>',
                         unsafe_allow_html=True)

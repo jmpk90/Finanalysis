@@ -420,7 +420,7 @@ st.markdown("""
 
     .stApp { background-color: var(--bg-primary) !important; }
     .main .block-container { padding: 0 0 40px 0 !important; max-width: 100% !important; }
-    #MainMenu, footer, [data-testid="stToolbar"] { visibility: hidden !important; display: none !important; }
+    #MainMenu, footer, [data-testid="stToolbarActions"], [data-testid="stMainMenu"], [data-testid="stAppDeployButton"], .stDeployButton { visibility: hidden !important; display: none !important; }
 
     /* ── SIDEBAR ── */
     [data-testid="stSidebar"] {
@@ -907,13 +907,35 @@ def _polish_css():
     /* never let wide tables / charts push the page sideways */
     [data-testid="stDataFrame"], .js-plotly-plot { max-width: 100%; }
     .block-container { max-width: 1280px; }
-    /* header stays (it holds the sidebar toggle on phones) but loses its white band */
+    /* header stays (it holds the sidebar toggle) but loses its white band */
     [data-testid="stHeader"] { background: transparent !important; }
+    [data-testid="stToolbar"] { display: flex !important; visibility: visible !important; }
+    [data-testid="stToolbarActions"], [data-testid="stMainMenu"], [data-testid="stAppDeployButton"], .stDeployButton { display: none !important; }
+
+    /* the button that re-opens a collapsed sidebar: always visible, readable on any page */
+    [data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"] {
+        display: flex !important; visibility: visible !important; opacity: 1 !important; z-index: 1000002 !important;
+    }
+    [data-testid="stExpandSidebarButton"] { background: var(--sidebar-bg) !important; border-radius: 10px !important; }
+    [data-testid="stExpandSidebarButton"] *, [data-testid="collapsedControl"] button, [data-testid="collapsedControl"] svg {
+        color: #FFFFFF !important; fill: #FFFFFF !important;
+    }
+    [data-testid="stSidebarCollapseButton"] *, [data-testid="stSidebar"] button[kind="headerNoPadding"] * { color: #D5DBE6 !important; fill: #D5DBE6 !important; }
+
+    /* zero-height helper iframes (login cookie sync) take no space */
+    [data-testid="stElementContainer"]:has(iframe[height="0"]) { position: absolute !important; height: 0 !important; width: 0 !important; overflow: hidden !important; margin: 0 !important; }
+
+    /* keep native widgets readable regardless of the visitor's OS dark/light setting */
+    .stApp { color-scheme: light; }
+    [data-testid="stSidebar"] { color-scheme: dark; }
 
     /* ── SIDEBAR: navy ── */
     [data-testid="stSidebar"], [data-testid="stSidebarContent"] { background-color: var(--sidebar-bg) !important; border-right: 0 !important; }
     [data-testid="stSidebar"] p, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label,
     [data-testid="stSidebar"] div, [data-testid="stSidebar"] li { color: #D5DBE6 !important; }
+    [data-testid="stSidebar"] [data-testid="stSidebarContent"] p, [data-testid="stSidebar"] [data-testid="stSidebarContent"] label,
+    [data-testid="stSidebar"] [data-testid="stSidebarContent"] span, [data-testid="stSidebar"] [data-testid="stSidebarContent"] small,
+    [data-testid="stSidebar"] [data-testid="stSidebarContent"] li { color: #D5DBE6 !important; }
     [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.14) !important; }
     [data-testid="stSidebar"] .eq-brand { display:flex; align-items:center; gap:12px; padding: 6px 4px 22px; }
     [data-testid="stSidebar"] .eq-brand-name { font-family: var(--font-serif,'Fraunces',serif); font-size: 20px; font-weight: 600; letter-spacing: .03em; line-height: 1.1; color: #FFFFFF !important; }

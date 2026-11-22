@@ -26,7 +26,9 @@ import logging
 import re
 import time
 import unicodedata
+import urllib.parse
 import streamlit as st
+import streamlit.components.v1 as components
 
 _log = logging.getLogger("equitex.store")
 
@@ -35,6 +37,13 @@ _MIN_PASSWORD_LEN = 8
 _MAX_FAILED_LOGINS = 5
 _LOCKOUT_SECONDS = 60
 _TABLES = ("portfolios", "profiles", "mf_store")
+
+# Persistent login: the Supabase refresh token (and the profile name) live in a
+# browser cookie so a page refresh keeps you signed in. Logging out revokes the
+# token on the server AND clears the cookie.
+_COOKIE_RT = "eq_rt"
+_COOKIE_PN = "eq_pn"
+_COOKIE_DAYS = 30
 
 # Session keys that belong to the *person*, not the browser tab. Everything
 # else in session_state is wiped on login/logout so one user can never see
@@ -55,7 +64,14 @@ def _get_client():
     sess = st.session_state.get("_sb_session")
     if sess:
         try:
-            client.auth.set_session(sess["access_token"], sess["refresh_token"])
+            resp = client.auth.set_session(sess["access_token"], sess["refresh_token"])
+            # Supabase rotates refresh tokens. If it refreshed, remember the NEW pair —
+            # otherwise the next rerun would replay a used token and the session would die.
+            if resp and getattr(resp, "session", None):
+                new = {"access_token": resp.session.access_token,
+                       "refresh_token": resp.session.refresh_token}
+                if new != sess:
+                    st.session_state._sb_session = new
         except Exception:
             _log.warning("Could not re-apply Supabase session", exc_info=True)
     return client
@@ -129,6 +145,63 @@ def _start_session(resp, profile_name):
     st.session_state._sb_profile_name = profile_name.strip()
 
 
+def _read_cookie(name):
+    try:
+        return st.context.cookies.get(name)
+    except Exception:
+        return None
+
+
+def _write_cookies(values, clear=False):
+    """Set (or clear) browser cookies via a zero-height component."""
+    js_lines = []
+    for k, v in values.items():
+        val = "" if clear else urllib.parse.quote(str(v), safe="")
+        age = 0 if clear else _COOKIE_DAYS * 86400
+        js_lines.append(f"set('{k}','{val}',{age});")
+    components.html(
+        "<script>(function(){try{var d=window.parent.document;"
+        "var sec=window.parent.location.protocol==='https:'?'; Secure':'';"
+        "function set(k,v,a){d.cookie=k+'='+v+'; path=/; max-age='+a+'; SameSite=Lax'+sec;}"
+        + "".join(js_lines) + "}catch(e){}})();</script>",
+        height=0,
+    )
+
+
+def _sync_cookie():
+    """Keep the cookie in step with the current (possibly rotated) refresh token."""
+    sess = st.session_state.get("_sb_session")
+    if not sess:
+        return
+    rt = sess.get("refresh_token")
+    if rt and rt != st.session_state.get("_cookie_rt"):
+        _write_cookies({_COOKIE_RT: rt, _COOKIE_PN: current_profile_name()})
+        st.session_state._cookie_rt = rt
+
+
+def _try_restore_from_cookie():
+    """On a fresh browser session (refresh / new tab), sign back in from the cookie."""
+    if st.session_state.get("_restore_tried"):
+        return False
+    st.session_state._restore_tried = True
+    rt = _read_cookie(_COOKIE_RT)
+    if not rt:
+        return False
+    try:
+        client = _get_client()
+        resp = client.auth.refresh_session(urllib.parse.unquote(rt))
+        if resp and resp.session and resp.user:
+            meta = getattr(resp.user, "user_metadata", None) or {}
+            pn = (urllib.parse.unquote(_read_cookie(_COOKIE_PN) or "")
+                  or meta.get("profile_name") or "Member")
+            _start_session(resp, pn)
+            return True
+    except Exception:
+        _log.info("Cookie session restore failed", exc_info=True)
+    st.session_state._eq_clear_cookie = True      # stale cookie: remove it
+    return False
+
+
 def sign_up(profile_name, password):
     if not profile_name or not profile_name.strip():
         return False, "Enter a profile name."
@@ -141,7 +214,8 @@ def sign_up(profile_name, password):
     client = _get_client()
     email = _synth_email(profile_name)
     try:
-        resp = client.auth.sign_up({"email": email, "password": password})
+        resp = client.auth.sign_up({"email": email, "password": password,
+                                    "options": {"data": {"profile_name": profile_name.strip()}}})
         if resp.session:
             _start_session(resp, profile_name)
             return True, "Profile created!"
@@ -186,14 +260,24 @@ def sign_out():
         _log.warning("Supabase sign_out failed", exc_info=True)
     # Wipe EVERYTHING per-user: profile, portfolios, MF store, Groq key, widget state.
     _reset_user_state(keep_client=False)
+    st.session_state._eq_clear_cookie = True      # remove the login cookie on the next render
+    st.session_state._restore_tried = True        # and don't auto-sign-in from the old one
 
 
 def render_login_gate():
     """Call at the very top of the app. Returns True if the person is
     logged in and the rest of the app should render; otherwise shows
     the login/signup screen and returns False."""
+    if not is_logged_in():
+        if _try_restore_from_cookie():
+            st.rerun()
     if is_logged_in():
+        _sync_cookie()
         return True
+
+    if st.session_state.pop("_eq_clear_cookie", False):
+        _write_cookies({_COOKIE_RT: "", _COOKIE_PN: ""}, clear=True)
+        st.session_state.pop("_cookie_rt", None)
 
     st.markdown("""
     <style>

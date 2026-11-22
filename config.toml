@@ -1,0 +1,22 @@
+# Put this file in your repo at  .streamlit/config.toml
+# It makes every native Streamlit widget use the EQUITEX palette, so text stays
+# readable even when the visitor's browser/OS is in dark mode.
+
+[theme]
+base = "light"
+primaryColor = "#0E6E58"
+backgroundColor = "#F0F1EA"
+secondaryBackgroundColor = "#E6E8DF"
+textColor = "#192623"
+
+[theme.sidebar]
+backgroundColor = "#172236"
+secondaryBackgroundColor = "#22314D"
+textColor = "#D5DBE6"
+primaryColor = "#0E6E58"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
